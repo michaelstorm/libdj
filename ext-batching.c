@@ -220,11 +220,6 @@ int print_block_inode(uint32_t inode, char *path, uint64_t pos, uint64_t file_le
     return 0;
 }
 
-int noop_block(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
-{
-    return 0;
-}
-
 int scope_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t ref_blk, int ref_offset, void *private)
 {
     struct scope_blocks_info *scope_info = (struct scope_blocks_info *)private;
@@ -469,11 +464,4 @@ void initialize_ext_batching(char *error_prog_name)
     prog_name = error_prog_name;
     initialize_ext2_error_table();
     read_buf = malloc(read_buf_len);
-}
-
-int main2(int argc, char **argv)
-{
-    initialize_ext_batching(argv[0]);
-    iterate_dir(argv[1], argv[2], noop_block);
-    return 0;
 }

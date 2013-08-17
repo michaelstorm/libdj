@@ -34,10 +34,3 @@ int file_md5(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *
     }
     return 0;
 }
-
-int main(int argc, char **argv)
-{
-    initialize_ext_batching(argv[0]);
-    iterate_dir(argv[1], argv[2], file_md5);
-    return 0;
-}
