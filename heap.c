@@ -64,12 +64,20 @@ void heapify_up(struct heap *heap, int index)
 {
     while (index > 0)
     {
+        //fprintf(stderr, "heapify_up index %d\n", index);
+        //print_heap(stderr, heap);
+
+        int parent_index = (index-1)/2;
+
         struct heap_elem *current_elem = &heap->elems[index];
-        struct heap_elem *parent_elem = &heap->elems[index/2];
+        struct heap_elem *parent_elem = &heap->elems[parent_index];
         if (current_elem->key < parent_elem->key)
         {
             swap_heap_elems(current_elem, parent_elem);
-            index = index/2;
+
+            //fprintf(stderr, "swapped index %d with %d\n", index, parent_index);
+
+            index = parent_index;
         }
         else
             break;
@@ -78,10 +86,11 @@ void heapify_up(struct heap *heap, int index)
 
 void heapify_down(struct heap *heap, int index)
 {
-    //printf("heapify_down index %d\n", index);
-    //print_heap(heap);
     while (index < heap->current_size)
     {
+        //fprintf(stderr, "heapify_down index %d\n", index);
+        //print_heap(stderr, heap);
+
         struct heap_elem *current_elem = &heap->elems[index];
         //printf("key: %lu\n", current_elem->key);
 
@@ -109,8 +118,7 @@ void heapify_down(struct heap *heap, int index)
         {
             swap_heap_elems(current_elem, &heap->elems[swap_index]);
 
-            //printf("swapped index %d with %d\n", index, swap_index);
-            //print_heap(heap);
+            //fprintf(stderr, "swapped index %d with %d\n", index, swap_index);
 
             index = swap_index;
         }
@@ -165,10 +173,10 @@ void verify_heap(struct heap *heap)
         int first_greater = first_child_elem == NULL || first_child_elem->key > current_elem->key;
         int second_greater = second_child_elem == NULL || second_child_elem->key > current_elem->key;
 
-        /*if (!first_greater)
-            printf("heap property violated at index %d (key %lu) because its first child's key is %lu\n", i, heap->elems[i].key, first_child_elem->key);
+        if (!first_greater)
+            fprintf(stderr, "heap property violated at index %d (key %lu) because its first child's key is %lu\n", i, heap->elems[i].key, first_child_elem->key);
         if (!second_greater)
-            printf("heap property violated at index %d (key %lu) because its second child's key is %lu\n", i, heap->elems[i].key, second_child_elem->key);*/
+            fprintf(stderr, "heap property violated at index %d (key %lu) because its second child's key is %lu\n", i, heap->elems[i].key, second_child_elem->key);
 
         if (!first_greater || !second_greater)
             exit(1);

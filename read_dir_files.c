@@ -1,7 +1,11 @@
+#define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <string.h>
+#include <fcntl.h>
 
 int buf_len = 1048576;
 char *buf;
@@ -29,10 +33,16 @@ void recurse_dir(char *base, char *dir_name)
                 sprintf(path, "%s/%s", dir_path, ent->d_name);
                 path[strlen(dir_path) + strlen(ent->d_name) + 1] = '\0';
 
-                FILE *f = fopen(path, "r");
+                /*FILE *f = fopen(path, "r");
                 while (!feof(f))
                     fread(buf, buf_len, 1, f);
-                fclose(f);
+                fclose(f);*/
+                int fd = open(path, O_RDONLY | O_DIRECT);
+                int bytes_read;
+                while ((bytes_read = read(fd, buf, buf_len)) > 0);
+                if (bytes_read == -1)
+                    perror("Error reading file");
+                close(fd);
             }
             else if (ent->d_type == DT_DIR)
             {
@@ -50,7 +60,8 @@ void recurse_dir(char *base, char *dir_name)
 
 int main(int argc, char **argv)
 {
-    buf = malloc(buf_len);
+    if (posix_memalign((void **)&buf, 512, buf_len))
+        perror("Error allocating aligned memory");
     recurse_dir(argv[1], NULL);
     return 0;
 }

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 
 #include <ext2fs/ext2fs.h>
@@ -71,15 +72,13 @@ char *prog_name;
 struct inode_list
 {
     ext2_ino_t index;
-    char *name;
+    char *path;
     uint64_t len;
-    struct dir_tree_entry *dir;
     struct inode_list *next;
 };
 
 struct dir_tree_entry
 {
-    ext2_ino_t inode;
     char *path;
     struct dir_tree_entry *parent;
 };
@@ -98,9 +97,17 @@ struct inode_cb_info
     char *path;
     uint64_t len;
     e2_blkcnt_t blocks_read;
+    e2_blkcnt_t blocks_scanned;
     struct heap *block_cache;
     void *cb_private;
     int references;
+};
+
+struct referenced_data
+{
+    char *data;
+    uint64_t len;
+    e2_blkcnt_t references;
 };
 
 struct block_list
@@ -109,10 +116,11 @@ struct block_list
     blk64_t physical_block;
     e2_blkcnt_t logical_block;
     char *data;
+    size_t data_len;
     struct block_list *next;
 };
 
-struct scope_blocks_info
+struct scan_blocks_info
 {
     block_cb cb;
     struct inode_cb_info *inode_info;
@@ -120,21 +128,34 @@ struct scope_blocks_info
     struct block_list *list_end;
 };
 
+char *dir_path_append_name(struct dir_tree_entry *dir, char *name)
+{
+    char *path;
+    if (dir == NULL)
+    {
+        path = malloc(strlen(name)+1);
+        strcpy(path, name);
+    }
+    else
+    {
+        path = malloc(strlen(dir->path) + strlen(name) + 2);
+        sprintf(path, "%s/%s", dir->path, name);
+    }
+    return path;
+}
+
 void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb_data)
 {
     struct ext2_inode inode_contents;
     CHECK_FATAL(ext2fs_read_inode(cb_data->fs, ino, &inode_contents),
             "while reading inode contents");
 
-    //if (ext2fs_inode_has_valid_blocks(&inode_contents))
     if (!S_ISLNK(inode_contents.i_mode))
     {
         struct inode_list *list = ecalloc(sizeof(struct inode_list));
         list->index = ino;
-        list->dir = cb_data->dir;
         list->len = inode_contents.i_size;
-        list->name = malloc(strlen(name)+1);
-        strcpy(list->name, name);
+        list->path = dir_path_append_name(cb_data->dir, name);
 
         if (cb_data->list_start == NULL)
         {
@@ -151,44 +172,36 @@ void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb
 
 int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, int offset, int blocksize, char *buf, void *private)
 {
+    // saw the 0xFF in e2fsprogs sources; don't know why the high bits would be set
+    int name_len = dirent->name_len & 0xFF;
+    char name[name_len+1];
+    memcpy(name, dirent->name, name_len);
+    name[name_len] = '\0';
+
     if (entry == DIRENT_OTHER_FILE)
     {
         struct dir_entry_cb_data *cb_data = (struct dir_entry_cb_data *)private;
 
-        // saw the 0xFF in e2fsprogs sources; don't know why the high bits would be set
-        int name_len = dirent->name_len & 0xFF;
-        char name[name_len+1];
-        memcpy(name, dirent->name, name_len);
-        name[name_len] = '\0';
-
         errcode_t dir_check_result = ext2fs_check_directory(cb_data->fs, dirent->inode);
         if (dir_check_result == 0)
         {
-            //printf("directory dir: %s, name: %s\n", cb_data->dir->path, name);
-            struct dir_tree_entry *dir = ecalloc(sizeof(struct dir_tree_entry));
-            dir->inode = dirent->inode;
-            dir->parent = cb_data->dir;
-            if (cb_data->dir == NULL)
-            {
-                dir->path = malloc(name_len+1);
-                strcpy(dir->path, name);
-            }
-            else
-            {
-                dir->path = malloc(strlen(cb_data->dir->path) + name_len + 2);
-                sprintf(dir->path, "%s/%s", cb_data->dir->path, name);
-            }
+            //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
+            struct dir_tree_entry dir;
+            dir.parent = cb_data->dir;
+            dir.path = dir_path_append_name(dir.parent, name);
 
             char block_buf[cb_data->fs->blocksize*3];
 
-            cb_data->dir = dir;
+            cb_data->dir = &dir;
             CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0, block_buf, dir_entry_cb, cb_data),
                     "while iterating over directory %s", name);
             cb_data->dir = cb_data->dir->parent;
+
+            free(dir.path);
         }
         else if (dir_check_result == EXT2_ET_NO_DIRECTORY)
         {
-            //printf("file dir: %s, name: %s\n", cb_data->dir->path, name);
+            //fprintf(stderr, "file dir: %s, name: %s\n", cb_data->dir->path, name);
             dir_entry_add_file(dirent->inode, name, cb_data);
         }
         else
@@ -202,64 +215,50 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
 SORT_FUNC(inode_list_sort, struct inode_list, (p->index < q->index ? -1 : 1))
 SORT_FUNC(block_list_sort, struct block_list, (p->physical_block < q->physical_block ? -1 : 1))
 
-int read_buf_len = 1048576;
-char *read_buf;
-
-int print_block_data(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
+int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t ref_blk, int ref_offset, void *private)
 {
-    char str_data[data_len+1];
-    memcpy(str_data, data, data_len);
-    str_data[data_len+1] = '\0';
-    printf("%s", str_data);
-    return 0;
-}
+    struct scan_blocks_info *scan_info = (struct scan_blocks_info *)private;
+    //if (blockcnt == 0)
+    //    fprintf(stderr, "first of %s\n", scan_info->inode_info->path);
 
-int print_block_inode(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
-{
-    printf("test cb inode %u, pos %lu, len %lu, path %s\n", inode, pos, data_len, path);
-    return 0;
-}
-
-int scope_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t ref_blk, int ref_offset, void *private)
-{
-    struct scope_blocks_info *scope_info = (struct scope_blocks_info *)private;
-
-    // ignore the extra "empty" block at the end of a file, to allow appending for writers, when we pass in BLOCK_FLAG_HOLE
-    if (blockcnt * fs->blocksize >= scope_info->inode_info->len)
+    // Ignore the extra "empty" block at the end of a file, to allow appending for writers, when we pass in BLOCK_FLAG_HOLE,
+    // unless the file is empty
+    if (blockcnt * fs->blocksize >= scan_info->inode_info->len || scan_info->inode_info->len == 0)
         return 0;
 
+    //fprintf(stderr, "logical block %ld of %s is physical block %ld\n", blockcnt, scan_info->inode_info->path, *blocknr);
     struct block_list *list = ecalloc(sizeof(struct block_list));
-    list->inode_info = scope_info->inode_info;
+    list->inode_info = scan_info->inode_info;
     list->inode_info->references++;
     list->physical_block = *blocknr;
     list->logical_block = blockcnt;
 
+    uint64_t logical_pos = list->logical_block * ((uint64_t)fs->blocksize);
+    uint64_t remaining_len = list->inode_info->len - logical_pos;
+    list->data_len = remaining_len > fs->blocksize ? fs->blocksize : remaining_len;
+
     // sparse files' hole blocks should be passed to this function, since we passed BLOCK_FLAG_HOLE to the
     // iterator function, but that doesn't seem to be happening - so fix it
-    e2_blkcnt_t last_logical_block = scope_info->list_start == NULL ? -1 : scope_info->list_end->logical_block;
     blk64_t zero_physical_block = 0;
-    for (e2_blkcnt_t i = last_logical_block+1; i < blockcnt; i++)
-        scope_block(fs, &zero_physical_block, i, 0, 0, private);
+    for (e2_blkcnt_t i = list->inode_info->blocks_scanned; i < blockcnt; i++)
+        scan_block(fs, &zero_physical_block, i, 0, 0, private);
 
-    list->logical_block = blockcnt;
+    list->inode_info->blocks_scanned++;
 
-    //fprintf(stderr, "logical block %ld (%ld) is physical block %ld\n", list->logical_block, blockcnt, list->physical_block);
-
-    if (scope_info->list_start == NULL)
+    if (scan_info->list_start == NULL)
     {
-        scope_info->list_start = list;
-        scope_info->list_end = list;
+        scan_info->list_start = list;
+        scan_info->list_end = list;
     }
     else
     {
-        scope_info->list_end->next = list;
-        scope_info->list_end = list;
+        scan_info->list_end->next = list;
+        scan_info->list_end = list;
     }
     return 0;
 }
 
-#define MAX_INODES 1
-#define MAX_BLOCKS 128000
+#define MAX_BLOCKS (128000*10)
 
 int compare_physical_blocks(struct block_list *p, struct block_list *q)
 {
@@ -271,14 +270,55 @@ int compare_logical_blocks(struct block_list *p, struct block_list *q)
     return p->logical_block < q->logical_block ? -1 : 1;
 }
 
-void iterate_dir(char *dev_path, char *target_path, block_cb cb)
+void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_cb cb, int *open_inodes_count)
+{
+    //fprintf(stderr, "heap size: %d, min: %d, blocks_read: %d\n", heap_size(inode_info->block_cache), ((struct block_list *)heap_min(inode_info->block_cache))->logical_block, inode_info->blocks_read);
+    while (heap_size(inode_info->block_cache) > 0 && ((struct block_list *)heap_min(inode_info->block_cache))->logical_block == inode_info->blocks_read)
+    {
+        if (inode_info->references <= 0)
+            exit_str("inode %d has %d references\n", inode_info->path, inode_info->references);
+
+        //fprintf(stderr, "removing min %ld\n", ((struct block_list *)heap_min(inode_info->block_cache))->logical_block);
+        struct block_list *next_block = heap_delmin(inode_info->block_cache);
+        
+        //fprintf(stderr, "removed from blocks heap for %s (%d references): ", inode_info->path, inode_info->references);
+        //print_heap(stderr, inode_info->block_cache);
+        //verify_heap(inode_info->block_cache);
+        //fprintf(stderr, "\n");
+
+        uint64_t logical_pos = next_block->logical_block * ((uint64_t)fs->blocksize);
+        cb(inode_info->inode, inode_info->path, logical_pos, inode_info->len, next_block->data, next_block->data_len, &inode_info->cb_private);
+
+        inode_info->blocks_read++;
+
+        free(next_block->data);
+        free(next_block);
+
+        //fprintf(stderr, "references to %s: %d\n", inode_info->path, inode_info->references-1);
+        if (--inode_info->references == 0)
+        {
+            if (inode_info->block_cache != NULL)
+                heap_destroy(inode_info->block_cache);
+            free(inode_info->path);
+            free(inode_info);
+            (*open_inodes_count)--;
+            break;
+        }
+        //fprintf(stderr, "open_inodes_count: %d\n", *open_inodes_count);
+    }
+}
+
+void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes, int flags)
 {
     ext2_filsys fs;
     CHECK_FATAL(ext2fs_open(dev_path, 0, 0, 0, unix_io_manager, &fs),
             "while opening file system on device %s", dev_path);
 
     int fd;
-    if ((fd = open(dev_path, O_RDONLY)) < 0)
+    int open_flags = O_RDONLY;
+    if (flags & ITERATE_OPT_DIRECT)
+        open_flags |= O_DIRECT;
+    if ((fd = open(dev_path, open_flags)) < 0)
         exit_str("Error opening block device %s", dev_path);
 
     ext2_ino_t ino;
@@ -289,7 +329,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb)
     errcode_t dir_check_result = ext2fs_check_directory(fs, ino);
     if (dir_check_result == 0)
     {
-        struct dir_tree_entry dir = { ino, target_path, NULL };
+        struct dir_tree_entry dir = { target_path, NULL };
         cb_data.dir = &dir;
         CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb, &cb_data),
                 "while iterating over directory %s", target_path);
@@ -301,7 +341,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb)
         memcpy(dir_path, target_path, dir_path_len);;
         dir_path[dir_path_len] = '\0';
 
-        struct dir_tree_entry dir = { ino, dir_path, NULL };
+        struct dir_tree_entry dir = { dir_path, NULL };
         cb_data.dir = &dir;
         dir_entry_add_file(ino, strrchr(target_path, '/')+1, &cb_data);
     }
@@ -315,50 +355,50 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb)
     int open_inodes_count = 0;
 
     char block_buf[fs->blocksize * 3];
-    struct scope_blocks_info scope_info = { cb, NULL, NULL, NULL };
+    struct scan_blocks_info scan_info = { cb, NULL, NULL, NULL };
 
     while (1)
     {
-        while (inode_list != NULL && open_inodes_count < MAX_INODES)
+        while (inode_list != NULL && open_inodes_count < max_inodes)
         {
-            char *path = malloc(strlen(inode_list->dir->path) + strlen(inode_list->name) + 2);
-            sprintf(path, "%s/%s", inode_list->dir->path, inode_list->name);
-
             struct inode_cb_info *info = ecalloc(sizeof(struct inode_cb_info));
             info->inode = inode_list->index;
-            info->path = path;
+            info->path = malloc(strlen(inode_list->path)+1);
+            strcpy(info->path, inode_list->path);
             info->len = inode_list->len;
-            info->block_cache = NULL;
-            info->blocks_read = 0;
-            info->references = 0;
 
-            scope_info.inode_info = info;
+            scan_info.inode_info = info;
 
-            //printf("path: %s\n", info->path);
+            //fprintf(stderr, "scoping blocks of path: %s\n", info->path);
 
-            CHECK_WARN_DO(ext2fs_block_iterate3(fs, info->inode, BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY | BLOCK_FLAG_READ_ONLY, block_buf, scope_block, &scope_info), continue,
+            CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY | BLOCK_FLAG_READ_ONLY, block_buf, scan_block, &scan_info),
                     "while iterating over blocks of inode %d", info->inode);
 
             if (info->references == 0)
             {
                 // empty files generate no blocks, so we'd get into an infinite loop below
-                scope_info.cb(info->inode, info->path, 0, 0, NULL, 0, &info->cb_private);
+                //fprintf(stderr, "empty %s\n", info->path);
+                scan_info.cb(info->inode, info->path, 0, 0, NULL, 0, &info->cb_private);
                 free(info->path);
                 free(info);
             }
             else
                 open_inodes_count++;
 
+            struct inode_list *old = inode_list;
             inode_list = inode_list->next;
+
+            free(old->path);
+            free(old);
         }
 
-        //scope_info.list_start = block_list_sort(scope_info.list_start);
+        scan_info.list_start = block_list_sort(scan_info.list_start);
 
-        struct block_list *block_list = scope_info.list_start;
-        scope_info.list_start = NULL;
-        struct block_list **prev_next_ptr = &scope_info.list_start;
+        struct block_list *block_list = scan_info.list_start;
+        scan_info.list_start = NULL;
+        struct block_list **prev_next_ptr = &scan_info.list_start;
 
-        int max_inode_blocks = (MAX_BLOCKS+open_inodes_count-1)/open_inodes_count;
+        int max_inode_blocks = open_inodes_count > 0 ? (MAX_BLOCKS+open_inodes_count-1)/open_inodes_count : MAX_BLOCKS;
 
         // for the holes in sparse files
         char zero_block[fs->blocksize];
@@ -368,76 +408,44 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb)
         {
             struct inode_cb_info *inode_info = block_list->inode_info;
 
-            uint64_t pos = inode_info->blocks_read * ((uint64_t)fs->blocksize);
-            uint64_t remaining_len = inode_info->len - pos;
-            int read_len = remaining_len > fs->blocksize ? fs->blocksize : remaining_len;
-
             if (block_list->logical_block < inode_info->blocks_read + max_inode_blocks)
             {
-                block_list->data = emalloc(read_len);
+                // If opened with O_DIRECT, the device needs to be read in multiples of 512 bytes into a buffer that
+                // is 512-byte aligned. Only the latter is documented; the former is documented as being undocumented.
+                size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((block_list->data_len+511)/512)*512 : block_list->data_len;
+                if (posix_memalign((void **)&block_list->data, 512, physical_read_len))
+                    perror("Error allocating aligned memory");
+
                 if (block_list->physical_block != 0)
                 {
-                    off_t offset = block_list->physical_block * ((off_t)fs->blocksize);
-                    if (lseek(fd, offset, SEEK_SET) == -1)
-                        exit_str("Error seeking block device");
-
-                    if (read(fd, block_list->data, read_len) != read_len)
-                        exit_str("Error reading from block device");
+                    off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
+                    if (pread(fd, block_list->data, physical_read_len, physical_pos) < block_list->data_len)
+                        perror("Error reading from block device");
                 }
                 else
-                    memcpy(block_list->data, zero_block, read_len);
+                    memcpy(block_list->data, zero_block, block_list->data_len);
 
                 if (inode_info->block_cache == NULL)
                     inode_info->block_cache = heap_create(max_inode_blocks);
 
-                //printf("inode: %d\n", inode_info->inode);
+                //fprintf(stderr, "inserting %ld\n", block_list->logical_block);
                 heap_insert(inode_info->block_cache, block_list->logical_block, block_list);
 
-                //fprintf(stderr, "inserted block %ld into blocks heap for %s (%d references, %ld blocks read, min %ld): ", block_list->logical_block, inode_info->path, inode_info->references, inode_info->blocks_read, ((struct block_list *)heap_min(inode_info->block_cache))->logical_block);
-                //print_heap(stderr, inode_info->block_cache);
-                //verify_heap(inode_info->block_cache);
+                /*fprintf(stderr, "inserted block %ld into blocks heap for %s (%d references, %ld blocks read, min %ld): ", block_list->logical_block, inode_info->path, inode_info->references, inode_info->blocks_read, ((struct block_list *)heap_min(inode_info->block_cache))->logical_block);
+                print_heap(stderr, inode_info->block_cache);
+                verify_heap(inode_info->block_cache);
+                fprintf(stderr, "\n");*/
 
-                // block_list could be freed if it's the heap minimum, so iterate to the next block here
+                // block_list could be freed if it's the heap minimum, so iterate to the next block before flushing cached blocks
                 block_list = block_list->next;
-
-                while (heap_size(inode_info->block_cache) > 0 && ((struct block_list *)heap_min(inode_info->block_cache))->logical_block == inode_info->blocks_read)
-                {
-                    if (inode_info->references <= 0)
-                        exit_str("inode %d has %d references\n", inode_info->inode, inode_info->references);
-
-                    struct block_list *next_block = heap_delmin(inode_info->block_cache);
-                    
-                    //fprintf(stderr, "removed from blocks heap for %s (%d references): ", inode_info->path, inode_info->references);
-                    //print_heap(stderr, inode_info->block_cache);
-                    //verify_heap(inode_info->block_cache);
-
-                    uint64_t next_block_pos = inode_info->blocks_read * ((uint64_t)fs->blocksize);
-                    uint64_t next_block_remaining_len = inode_info->len - next_block_pos;
-                    int next_block_read_len = next_block_remaining_len > fs->blocksize ? fs->blocksize : next_block_remaining_len;
-                    //printf("inode_info->len: %lu, next_block_pos: %lu, next_block_remaining_len: %lu, next_block_read_len: %d\n", inode_info->len, next_block_pos, next_block_remaining_len, next_block_read_len);
-                    scope_info.cb(inode_info->inode, inode_info->path, pos, inode_info->len, next_block->data, next_block_read_len, &inode_info->cb_private);
-
-                    // blocks_read is used in file pos calculation; make sure to only increment afterward
-                    inode_info->blocks_read++;
-
-                    free(next_block->data);
-                    free(next_block);
-
-                    if (--inode_info->references == 0)
-                    {
-                        if (inode_info->block_cache != NULL)
-                            heap_destroy(inode_info->block_cache);
-                        free(inode_info->path);
-                        free(inode_info);
-                        open_inodes_count--;
-                    }
-                }
+                flush_inode_blocks(fs, inode_info, cb, &open_inodes_count);
             }
             else
             {
-                fprintf(stderr, "block %ld (%ld blocks read; %u max blocks) for %s out of range\n", block_list->logical_block, inode_info->blocks_read, max_inode_blocks, inode_info->path);
+                //fprintf(stderr, "block %ld (%ld blocks read; %u max blocks) for %s out of range\n", block_list->logical_block, inode_info->blocks_read, max_inode_blocks, inode_info->path);
                 struct block_list *old_next = block_list->next;
                 *(prev_next_ptr) = block_list;
+                scan_info.list_end = block_list;
                 prev_next_ptr = &block_list->next;
                 block_list->next = NULL;
 
@@ -463,5 +471,4 @@ void initialize_ext_batching(char *error_prog_name)
 {
     prog_name = error_prog_name;
     initialize_ext2_error_table();
-    read_buf = malloc(read_buf_len);
 }
