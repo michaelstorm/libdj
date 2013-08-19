@@ -7,7 +7,10 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <et/com_err.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
+
 
 #include "crc.h"
 #include "ext-batching.h"
