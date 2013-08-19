@@ -106,8 +106,14 @@ struct inode_cb_info
 struct referenced_data
 {
     char *data;
-    uint64_t len;
     e2_blkcnt_t references;
+};
+
+struct data_reference
+{
+    struct referenced_data *ref;
+    off_t pos;
+    size_t len;
 };
 
 struct block_list
@@ -115,8 +121,7 @@ struct block_list
     struct inode_cb_info *inode_info;
     blk64_t physical_block;
     e2_blkcnt_t logical_block;
-    char *data;
-    size_t data_len;
+    struct data_reference data_ref;
     struct block_list *next;
 };
 
@@ -235,7 +240,7 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t r
 
     uint64_t logical_pos = list->logical_block * ((uint64_t)fs->blocksize);
     uint64_t remaining_len = list->inode_info->len - logical_pos;
-    list->data_len = remaining_len > fs->blocksize ? fs->blocksize : remaining_len;
+    list->data_ref.len = remaining_len > fs->blocksize ? fs->blocksize : remaining_len;
 
     // sparse files' hole blocks should be passed to this function, since we passed BLOCK_FLAG_HOLE to the
     // iterator function, but that doesn't seem to be happening - so fix it
@@ -287,11 +292,16 @@ void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_
         //fprintf(stderr, "\n");
 
         uint64_t logical_pos = next_block->logical_block * ((uint64_t)fs->blocksize);
-        cb(inode_info->inode, inode_info->path, logical_pos, inode_info->len, next_block->data, next_block->data_len, &inode_info->cb_private);
+        cb(inode_info->inode, inode_info->path, logical_pos, inode_info->len, next_block->data_ref.ref->data, next_block->data_ref.len, &inode_info->cb_private);
 
         inode_info->blocks_read++;
 
-        free(next_block->data);
+        if (--next_block->data_ref.ref->references == 0)
+        {
+            free(next_block->data_ref.ref->data);
+            free(next_block->data_ref.ref);
+        }
+
         free(next_block);
 
         //fprintf(stderr, "references to %s: %d\n", inode_info->path, inode_info->references-1);
@@ -410,20 +420,26 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
             if (block_list->logical_block < inode_info->blocks_read + max_inode_blocks)
             {
+                struct referenced_data *ref = ecalloc(sizeof(struct referenced_data));
+                ref->references++;
+
+                block_list->data_ref.ref = ref;
+                block_list->data_ref.pos = 0;
+
                 // If opened with O_DIRECT, the device needs to be read in multiples of 512 bytes into a buffer that
                 // is 512-byte aligned. Only the latter is documented; the former is documented as being undocumented.
-                size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((block_list->data_len+511)/512)*512 : block_list->data_len;
-                if (posix_memalign((void **)&block_list->data, 512, physical_read_len))
+                size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((block_list->data_ref.len+511)/512)*512 : block_list->data_ref.len;
+                if (posix_memalign((void **)&ref->data, 512, physical_read_len))
                     perror("Error allocating aligned memory");
 
                 if (block_list->physical_block != 0)
                 {
                     off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
-                    if (pread(fd, block_list->data, physical_read_len, physical_pos) < block_list->data_len)
+                    if (pread(fd, ref->data, physical_read_len, physical_pos) < block_list->data_ref.len)
                         perror("Error reading from block device");
                 }
                 else
-                    memcpy(block_list->data, zero_block, block_list->data_len);
+                    memcpy(ref->data, zero_block, block_list->data_ref.len);
 
                 if (inode_info->block_cache == NULL)
                     inode_info->block_cache = heap_create(max_inode_blocks);
