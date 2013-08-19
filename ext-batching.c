@@ -263,8 +263,6 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t r
     return 0;
 }
 
-#define MAX_BLOCKS (128000*10)
-
 int compare_physical_blocks(struct block_list *p, struct block_list *q)
 {
     return p->physical_block < q->physical_block ? -1 : 1;
@@ -291,13 +289,17 @@ void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_
         //verify_heap(inode_info->block_cache);
         //fprintf(stderr, "\n");
 
+        //fprintf(stderr, "buffer %p has %ld references\n", next_block->data_ref.ref, next_block->data_ref.ref->references);
+
         uint64_t logical_pos = next_block->logical_block * ((uint64_t)fs->blocksize);
-        cb(inode_info->inode, inode_info->path, logical_pos, inode_info->len, next_block->data_ref.ref->data, next_block->data_ref.len, &inode_info->cb_private);
+        char *block_data = next_block->data_ref.ref->data + next_block->data_ref.pos;
+        cb(inode_info->inode, inode_info->path, logical_pos, inode_info->len, block_data, next_block->data_ref.len, &inode_info->cb_private);
 
         inode_info->blocks_read++;
 
         if (--next_block->data_ref.ref->references == 0)
         {
+            //fprintf(stderr, "freeing buffer of %p at %p\n", next_block->data_ref.ref, next_block->data_ref.ref->data);
             free(next_block->data_ref.ref->data);
             free(next_block->data_ref.ref);
         }
@@ -318,7 +320,7 @@ void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_
     }
 }
 
-void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes, int flags)
+void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes, int max_blocks, int coalesce_distance, int flags)
 {
     ext2_filsys fs;
     CHECK_FATAL(ext2fs_open(dev_path, 0, 0, 0, unix_io_manager, &fs),
@@ -408,39 +410,77 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         scan_info.list_start = NULL;
         struct block_list **prev_next_ptr = &scan_info.list_start;
 
-        int max_inode_blocks = open_inodes_count > 0 ? (MAX_BLOCKS+open_inodes_count-1)/open_inodes_count : MAX_BLOCKS;
-
-        // for the holes in sparse files
-        char zero_block[fs->blocksize];
-        memset(zero_block, 0, fs->blocksize);
+        int max_inode_blocks = open_inodes_count > 0 ? (max_blocks+open_inodes_count-1)/open_inodes_count : max_blocks;
+        //fprintf(stderr, "max_inode_blocks: %d\n", max_inode_blocks);
 
         while (block_list != NULL)
         {
-            struct inode_cb_info *inode_info = block_list->inode_info;
+            struct referenced_data *ref = ecalloc(sizeof(struct referenced_data));
 
-            if (block_list->logical_block < inode_info->blocks_read + max_inode_blocks)
+            e2_blkcnt_t consecutive_blocks = 0;
+            size_t consecutive_len = 0;
+            struct block_list *fwd_block_list = block_list;
+            struct block_list *prev_fwd_block = NULL;
+            while (1)
             {
-                struct referenced_data *ref = ecalloc(sizeof(struct referenced_data));
+                //fprintf(stderr, "%ld < %ld + %d = %s\n", fwd_block_list->logical_block, fwd_block_list->inode_info->blocks_read, max_inode_blocks,
+                //        fwd_block_list->logical_block < fwd_block_list->inode_info->blocks_read + max_inode_blocks ? "true" : "false");
+                if (fwd_block_list->logical_block >= fwd_block_list->inode_info->blocks_read + max_inode_blocks)
+                    break;
+
                 ref->references++;
 
-                block_list->data_ref.ref = ref;
-                block_list->data_ref.pos = 0;
+                consecutive_blocks++;
+                e2_blkcnt_t physical_block_diff = prev_fwd_block == NULL ? 0 : fwd_block_list->physical_block - prev_fwd_block->physical_block;
+                if (prev_fwd_block != NULL)
+                    consecutive_len += (physical_block_diff - 1) * ((uint64_t)fs->blocksize);
 
+                /*if (physical_block_diff > 1)
+                    fprintf(stderr, "skipping %ld blocks between %ld and %ld of %s\n", physical_block_diff,
+                            prev_fwd_block->physical_block, fwd_block_list->physical_block, fwd_block_list->inode_info->path);*/
+
+                fwd_block_list->data_ref.pos = (fwd_block_list->physical_block - block_list->physical_block) * ((uint64_t)fs->blocksize);
+
+                if (fwd_block_list->data_ref.len != fs->blocksize
+                        || fwd_block_list->next == NULL
+                        || (fwd_block_list->next->physical_block > fwd_block_list->physical_block+coalesce_distance
+                            && !(fwd_block_list->physical_block == 0 && fwd_block_list->next->physical_block == 0)))
+                {
+                    consecutive_len += fwd_block_list->data_ref.len;
+                    break;
+                }
+                else
+                    consecutive_len += fs->blocksize;
+
+                prev_fwd_block = fwd_block_list;
+                fwd_block_list = fwd_block_list->next;
+            }
+            //fprintf(stderr, "consecutive len: %lu, blocks: %ld\n", consecutive_len, consecutive_blocks);
+
+            if (block_list->physical_block != 0)
+            {
                 // If opened with O_DIRECT, the device needs to be read in multiples of 512 bytes into a buffer that
                 // is 512-byte aligned. Only the latter is documented; the former is documented as being undocumented.
-                size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((block_list->data_ref.len+511)/512)*512 : block_list->data_ref.len;
+                size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((consecutive_len+511)/512)*512 : consecutive_len;
                 if (posix_memalign((void **)&ref->data, 512, physical_read_len))
                     perror("Error allocating aligned memory");
 
-                if (block_list->physical_block != 0)
-                {
-                    off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
-                    if (pread(fd, ref->data, physical_read_len, physical_pos) < block_list->data_ref.len)
-                        perror("Error reading from block device");
-                }
-                else
-                    memcpy(ref->data, zero_block, block_list->data_ref.len);
+                off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
+                if (pread(fd, ref->data, physical_read_len, physical_pos) < consecutive_len)
+                    perror("Error reading from block device");
+            }
+            else
+                ref->data = ecalloc(consecutive_len);
 
+            //fprintf(stderr, "allocated buffer of %p at %p\n", ref, ref->data);
+
+            e2_blkcnt_t read_blocks = 0;
+            while (read_blocks < consecutive_blocks)
+            {
+                block_list->data_ref.ref = ref;
+                read_blocks++;
+
+                struct inode_cb_info *inode_info = block_list->inode_info;
                 if (inode_info->block_cache == NULL)
                     inode_info->block_cache = heap_create(max_inode_blocks);
 
@@ -449,14 +489,15 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
                 /*fprintf(stderr, "inserted block %ld into blocks heap for %s (%d references, %ld blocks read, min %ld): ", block_list->logical_block, inode_info->path, inode_info->references, inode_info->blocks_read, ((struct block_list *)heap_min(inode_info->block_cache))->logical_block);
                 print_heap(stderr, inode_info->block_cache);
-                verify_heap(inode_info->block_cache);
-                fprintf(stderr, "\n");*/
+                verify_heap(inode_info->block_cache);*/
 
                 // block_list could be freed if it's the heap minimum, so iterate to the next block before flushing cached blocks
                 block_list = block_list->next;
                 flush_inode_blocks(fs, inode_info, cb, &open_inodes_count);
             }
-            else
+
+            // block is out of range
+            if (consecutive_len == 0)
             {
                 //fprintf(stderr, "block %ld (%ld blocks read; %u max blocks) for %s out of range\n", block_list->logical_block, inode_info->blocks_read, max_inode_blocks, inode_info->path);
                 struct block_list *old_next = block_list->next;

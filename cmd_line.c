@@ -70,7 +70,11 @@ int main(int argc, char **argv)
     int dir_index = 0;
 
     int max_inodes = 100;
+    int max_blocks = 128000;
+    int coalesce_distance = 3;
     int inodes_opt = 0;
+    int blocks_opt = 0;
+    int coalesce_opt = 0;
 
     for (int i = 0; i < argc; i++)
     {
@@ -90,15 +94,29 @@ int main(int argc, char **argv)
             flags |= ITERATE_OPT_DIRECT;
         else if (!strcmp(argv[i], "-i"))
             inodes_opt = 1;
-        else if (device_index == 0)
-            device_index = i;
-        else if (dir_index == 0)
-            dir_index = i;
+        else if (!strcmp(argv[i], "-b"))
+            blocks_opt = 1;
+        else if (!strcmp(argv[i], "-c"))
+            coalesce_opt = 1;
         else if (inodes_opt)
         {
             max_inodes = atoi(argv[i]);
             inodes_opt = 0;
         }
+        else if (blocks_opt)
+        {
+            max_blocks = atoi(argv[i]);
+            blocks_opt = 0;
+        }
+        else if (coalesce_opt)
+        {
+            coalesce_distance = atoi(argv[i]);
+            coalesce_opt = 0;
+        }
+        else if (device_index == 0)
+            device_index = i;
+        else if (dir_index == 0)
+            dir_index = i;
         else
         {
             fprintf(stderr, "Unrecognized option %s\n", argv[i]);
@@ -122,13 +140,13 @@ int main(int argc, char **argv)
 
     switch (action)
     {
-        case ACTION_MD5: iterate_dir(device, dir, file_md5, max_inodes, flags); break;
-        case ACTION_CAT: iterate_dir(device, dir, action_cat, max_inodes, flags); break;
-        case ACTION_INFO: iterate_dir(device, dir, action_info, max_inodes, flags); break;
-        case ACTION_CAT_INFO: iterate_dir(device, dir, action_cat_info, max_inodes, flags); break;
+        case ACTION_MD5: iterate_dir(device, dir, file_md5, max_inodes, max_blocks, coalesce_distance, flags); break;
+        case ACTION_CAT: iterate_dir(device, dir, action_cat, max_inodes, max_blocks, coalesce_distance, flags); break;
+        case ACTION_INFO: iterate_dir(device, dir, action_info, max_inodes, max_blocks, coalesce_distance, flags); break;
+        case ACTION_CAT_INFO: iterate_dir(device, dir, action_cat_info, max_inodes, max_blocks, coalesce_distance,  flags); break;
         case ACTION_CRC: fprintf(stderr, "CRC not yet implemented\n"); exit(1); break;
-        case ACTION_LIST: iterate_dir(device, dir, action_list, max_inodes, flags); break;
-        case ACTION_NONE: iterate_dir(device, dir, action_none, max_inodes, flags); break;
+        case ACTION_LIST: iterate_dir(device, dir, action_list, max_inodes, max_blocks, coalesce_distance, flags); break;
+        case ACTION_NONE: iterate_dir(device, dir, action_none, max_inodes, max_blocks, coalesce_distance, flags); break;
     };
 
     return 0;
