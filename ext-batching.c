@@ -266,16 +266,6 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t r
     return 0;
 }
 
-int compare_physical_blocks(struct block_list *p, struct block_list *q)
-{
-    return p->physical_block < q->physical_block ? -1 : 1;
-}
-
-int compare_logical_blocks(struct block_list *p, struct block_list *q)
-{
-    return p->logical_block < q->logical_block ? -1 : 1;
-}
-
 void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_cb cb, int *open_inodes_count)
 {
     //fprintf(stderr, "heap size: %d, min: %d, blocks_read: %d\n", heap_size(inode_info->block_cache), ((struct block_list *)heap_min(inode_info->block_cache))->logical_block, inode_info->blocks_read);
@@ -340,10 +330,12 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     CHECK_FATAL(ext2fs_namei_follow(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, target_path, &ino),
             "while looking up path %s", target_path);
 
+    // find the inodes we want to read
     struct dir_entry_cb_data cb_data = { fs, NULL, NULL, NULL };
     errcode_t dir_check_result = ext2fs_check_directory(fs, ino);
     if (dir_check_result == 0)
     {
+        // if it's a directory, iterate over it
         struct dir_tree_entry dir = { target_path, NULL };
         cb_data.dir = &dir;
         CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb, &cb_data),
@@ -351,6 +343,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     }
     else if (dir_check_result == EXT2_ET_NO_DIRECTORY)
     {
+        // if it's a regular file, just add it
         int dir_path_len = strrchr(target_path, '/') - target_path;
         char *dir_path = malloc(dir_path_len+1);
         memcpy(dir_path, target_path, dir_path_len);;
@@ -458,22 +451,28 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
                 prev_fwd_block = fwd_block_list;
                 fwd_block_list = fwd_block_list->next;
             }
+
             //fprintf(stderr, "consecutive len: %lu, blocks: %ld\n", consecutive_len, consecutive_blocks);
 
-            if (block_list->physical_block != 0)
+            if (consecutive_blocks > 0)
             {
-                // If opened with O_DIRECT, the device needs to be read in multiples of 512 bytes into a buffer that
-                // is 512-byte aligned. Only the latter is documented; the former is documented as being undocumented.
-                size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((consecutive_len+511)/512)*512 : consecutive_len;
-                if (posix_memalign((void **)&ref->data, 512, physical_read_len))
-                    perror("Error allocating aligned memory");
+                if (block_list->physical_block != 0)
+                {
+                    // If opened with O_DIRECT, the device needs to be read in multiples of 512 bytes into a buffer that
+                    // is 512-byte aligned. Only the latter is documented; the former is documented as being undocumented.
+                    size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((consecutive_len+511)/512)*512 : consecutive_len;
+                    if (posix_memalign((void **)&ref->data, 512, physical_read_len))
+                        perror("Error allocating aligned memory");
 
-                off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
-                if (pread(fd, ref->data, physical_read_len, physical_pos) < consecutive_len)
-                    perror("Error reading from block device");
+                    off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
+                    if (pread(fd, ref->data, physical_read_len, physical_pos) < consecutive_len)
+                        perror("Error reading from block device");
+                }
+                else
+                    ref->data = ecalloc(consecutive_len);
             }
             else
-                ref->data = ecalloc(consecutive_len);
+                free(ref);
 
             //fprintf(stderr, "allocated buffer of %p at %p\n", ref, ref->data);
 
