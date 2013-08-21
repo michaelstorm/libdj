@@ -78,6 +78,9 @@ struct inode_list
     char *path;
     uint64_t len;
     struct inode_list *next;
+
+    struct block_list *blocks_start;
+    struct block_list *blocks_end;
 };
 
 struct dir_tree_entry
@@ -132,6 +135,7 @@ struct scan_blocks_info
 {
     block_cb cb;
     struct inode_cb_info *inode_info;
+    struct inode_list *inode_list;
     struct block_list *list_start;
     struct block_list *list_end;
 };
@@ -253,15 +257,16 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t r
 
     list->inode_info->blocks_scanned++;
 
-    if (scan_info->list_start == NULL)
+    struct inode_list *inode_list = scan_info->inode_list;
+    if (inode_list->blocks_start == NULL)
     {
-        scan_info->list_start = list;
-        scan_info->list_end = list;
+        inode_list->blocks_start = list;
+        inode_list->blocks_end = list;
     }
     else
     {
-        scan_info->list_end->next = list;
-        scan_info->list_end = list;
+        inode_list->blocks_end->next = list;
+        inode_list->blocks_end = list;
     }
     return 0;
 }
@@ -326,6 +331,9 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     if ((fd = open(dev_path, open_flags)) < 0)
         exit_str("Error opening block device %s", dev_path);
 
+    if (flags & ITERATE_OPT_PROFILE)
+        fprintf(stderr, "BEGIN INODE SCAN\n");
+
     ext2_ino_t ino;
     CHECK_FATAL(ext2fs_namei_follow(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, target_path, &ino),
             "while looking up path %s", target_path);
@@ -359,39 +367,70 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         exit(1);
     }
 
+    if (flags & ITERATE_OPT_PROFILE)
+        fprintf(stderr, "END INODE SCAN\n");
+
     struct inode_list *inode_list = inode_list_sort(cb_data.list_start);
     int open_inodes_count = 0;
+    uint64_t seeks = 0;
+    uint64_t total_blocks = 0;
 
     char block_buf[fs->blocksize * 3];
-    struct scan_blocks_info scan_info = { cb, NULL, NULL, NULL };
+    struct scan_blocks_info scan_info = { cb, NULL, NULL, NULL, NULL };
+
+    if (flags & ITERATE_OPT_PROFILE)
+        fprintf(stderr, "BEGIN BLOCK SCAN\n");
+
+    struct inode_list *scan_inode_list = inode_list;
+    while (scan_inode_list != NULL && open_inodes_count < max_inodes)
+    {
+        struct inode_cb_info *info = ecalloc(sizeof(struct inode_cb_info));
+        info->inode = scan_inode_list->index;
+        info->path = malloc(strlen(scan_inode_list->path)+1);
+        strcpy(info->path, scan_inode_list->path);
+        info->len = scan_inode_list->len;
+
+        scan_info.inode_info = info;
+        scan_info.inode_list = scan_inode_list;
+
+        //fprintf(stderr, "scoping blocks of path: %s\n", info->path);
+
+        CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY | BLOCK_FLAG_READ_ONLY, block_buf, scan_block, &scan_info),
+                "while iterating over blocks of inode %d", info->inode);
+
+        if (info->references == 0)
+        {
+            // empty files generate no blocks, so we'd get into an infinite loop below
+            //fprintf(stderr, "empty %s\n", info->path);
+            scan_info.cb(info->inode, info->path, 0, 0, NULL, 0, &info->cb_private);
+            free(info->path);
+            free(info);
+        }
+
+        scan_inode_list = scan_inode_list->next;
+    }
+
+    if (flags & ITERATE_OPT_PROFILE)
+        fprintf(stderr, "END BLOCK SCAN\n");
 
     while (1)
     {
         while (inode_list != NULL && open_inodes_count < max_inodes)
         {
-            struct inode_cb_info *info = ecalloc(sizeof(struct inode_cb_info));
-            info->inode = inode_list->index;
-            info->path = malloc(strlen(inode_list->path)+1);
-            strcpy(info->path, inode_list->path);
-            info->len = inode_list->len;
-
-            scan_info.inode_info = info;
-
-            //fprintf(stderr, "scoping blocks of path: %s\n", info->path);
-
-            CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY | BLOCK_FLAG_READ_ONLY, block_buf, scan_block, &scan_info),
-                    "while iterating over blocks of inode %d", info->inode);
-
-            if (info->references == 0)
+            if (inode_list->blocks_start != NULL)
             {
-                // empty files generate no blocks, so we'd get into an infinite loop below
-                //fprintf(stderr, "empty %s\n", info->path);
-                scan_info.cb(info->inode, info->path, 0, 0, NULL, 0, &info->cb_private);
-                free(info->path);
-                free(info);
-            }
-            else
+                if (scan_info.list_start == NULL)
+                {
+                    scan_info.list_start = inode_list->blocks_start;
+                    scan_info.list_end = inode_list->blocks_end;
+                }
+                else
+                {
+                    scan_info.list_end->next = inode_list->blocks_start;
+                    scan_info.list_end = inode_list->blocks_end;
+                }
                 open_inodes_count++;
+            }
 
             struct inode_list *old = inode_list;
             inode_list = inode_list->next;
@@ -409,8 +448,11 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         int max_inode_blocks = open_inodes_count > 0 ? (max_blocks+open_inodes_count-1)/open_inodes_count : max_blocks;
         //fprintf(stderr, "max_inode_blocks: %d\n", max_inode_blocks);
 
+        if (flags & ITERATE_OPT_PROFILE)
+            fprintf(stderr, "BEGIN BLOCK READ\n");
         while (block_list != NULL)
         {
+            total_blocks++;
             struct referenced_data *ref = ecalloc(sizeof(struct referenced_data));
 
             e2_blkcnt_t consecutive_blocks = 0;
@@ -467,6 +509,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
                     off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
                     if (pread(fd, ref->data, physical_read_len, physical_pos) < consecutive_len)
                         perror("Error reading from block device");
+                    seeks++;
                 }
                 else
                     ref->data = ecalloc(consecutive_len);
@@ -510,14 +553,18 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
                 block_list = old_next;
             }
-
         }
+        if (flags & ITERATE_OPT_PROFILE)
+            fprintf(stderr, "END BLOCK READ\n");
 
         if (inode_list == NULL)
             break;
         //else
             //printf("remaining inode name: %s\n", inode_list->name);
     }
+
+    double seeks_percentage = total_blocks == 0 ? 0. : ((double)seeks)/((double)total_blocks) * 100.;
+    //fprintf(stderr, "seeks/blocks = %lu/%lu = %lf%%\n", seeks, total_blocks, seeks_percentage);
 
     if (close(fd) != 0)
         exit_str("Error closing block device");

@@ -92,6 +92,8 @@ int main(int argc, char **argv)
             action = ACTION_LIST;
         else if (!strcmp(argv[i], "-direct"))
             flags |= ITERATE_OPT_DIRECT;
+        else if (!strcmp(argv[i], "-profile"))
+            flags |= ITERATE_OPT_PROFILE;
         else if (!strcmp(argv[i], "-i"))
             inodes_opt = 1;
         else if (!strcmp(argv[i], "-b"))
