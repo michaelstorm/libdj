@@ -156,29 +156,22 @@ char *dir_path_append_name(struct dir_tree_entry *dir, char *name)
     return path;
 }
 
-void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb_data)
+void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb_data, uint64_t len)
 {
-    struct ext2_inode inode_contents;
-    CHECK_FATAL(ext2fs_read_inode(cb_data->fs, ino, &inode_contents),
-            "while reading inode contents");
+    struct inode_list *list = ecalloc(sizeof(struct inode_list));
+    list->index = ino;
+    list->len = len;
+    list->path = dir_path_append_name(cb_data->dir, name);
 
-    if (!S_ISLNK(inode_contents.i_mode))
+    if (cb_data->list_start == NULL)
     {
-        struct inode_list *list = ecalloc(sizeof(struct inode_list));
-        list->index = ino;
-        list->len = inode_contents.i_size;
-        list->path = dir_path_append_name(cb_data->dir, name);
-
-        if (cb_data->list_start == NULL)
-        {
-            cb_data->list_start = list;
-            cb_data->list_end = list;
-        }
-        else
-        {
-            cb_data->list_end->next = list;
-            cb_data->list_end = list;
-        }
+        cb_data->list_start = list;
+        cb_data->list_end = list;
+    }
+    else
+    {
+        cb_data->list_end->next = list;
+        cb_data->list_end = list;
     }
 }
 
@@ -194,8 +187,10 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
     {
         struct dir_entry_cb_data *cb_data = (struct dir_entry_cb_data *)private;
 
-        errcode_t dir_check_result = ext2fs_check_directory(cb_data->fs, dirent->inode);
-        if (dir_check_result == 0)
+        struct ext2_inode inode_contents;
+        CHECK_FATAL(ext2fs_read_inode(cb_data->fs, dirent->inode, &inode_contents),
+                "while reading inode contents");
+        if (LINUX_S_ISDIR(inode_contents.i_mode))
         {
             //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
             struct dir_tree_entry dir;
@@ -211,13 +206,11 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
 
             free(dir.path);
         }
-        else if (dir_check_result == EXT2_ET_NO_DIRECTORY)
+        else if (!S_ISLNK(inode_contents.i_mode))
         {
             //fprintf(stderr, "file dir: %s, name: %s\n", cb_data->dir->path, name);
-            dir_entry_add_file(dirent->inode, name, cb_data);
+            dir_entry_add_file(dirent->inode, name, cb_data, inode_contents.i_size);
         }
-        else
-            com_err(prog_name, dir_check_result, "while checking if inode %d is a directory", dirent->inode);
     }
 
     return 0;
@@ -340,8 +333,10 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
     // find the inodes we want to read
     struct dir_entry_cb_data cb_data = { fs, NULL, NULL, NULL };
-    errcode_t dir_check_result = ext2fs_check_directory(fs, ino);
-    if (dir_check_result == 0)
+    struct ext2_inode inode_contents;
+    CHECK_FATAL(ext2fs_read_inode(fs, ino, &inode_contents),
+            "while reading inode contents");
+    if (LINUX_S_ISDIR(inode_contents.i_mode))
     {
         // if it's a directory, iterate over it
         struct dir_tree_entry dir = { target_path, NULL };
@@ -349,7 +344,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb, &cb_data),
                 "while iterating over directory %s", target_path);
     }
-    else if (dir_check_result == EXT2_ET_NO_DIRECTORY)
+    else if (!S_ISLNK(inode_contents.i_mode))
     {
         // if it's a regular file, just add it
         int dir_path_len = strrchr(target_path, '/') - target_path;
@@ -359,13 +354,10 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
         struct dir_tree_entry dir = { dir_path, NULL };
         cb_data.dir = &dir;
-        dir_entry_add_file(ino, strrchr(target_path, '/')+1, &cb_data);
+        dir_entry_add_file(ino, strrchr(target_path, '/')+1, &cb_data, inode_contents.i_size);
     }
     else
-    {
-        com_err(prog_name, dir_check_result, "while checking if inode %d is a directory", ino);
-        exit(1);
-    }
+        exit_str("Unexpected file mode %x", inode_contents.i_mode);
 
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "END INODE SCAN\n");
