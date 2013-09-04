@@ -71,7 +71,7 @@ int main(int argc, char **argv)
 
     int max_inodes = 100;
     int max_blocks = 128000;
-    int coalesce_distance = 3;
+    int coalesce_distance = 1;
     int inodes_opt = 0;
     int blocks_opt = 0;
     int coalesce_opt = 0;
@@ -149,7 +149,6 @@ int main(int argc, char **argv)
         case ACTION_CRC: fprintf(stderr, "CRC not yet implemented\n"); exit(1); break;
         case ACTION_LIST: iterate_dir(device, dir, action_list, max_inodes, max_blocks, coalesce_distance, flags); break;
         case ACTION_NONE: iterate_dir(device, dir, action_none, max_inodes, max_blocks, coalesce_distance, flags); break;
-    };
-
+    }
     return 0;
 }

@@ -11,7 +11,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-
 #include "crc.h"
 #include "ext-batching.h"
 #include "heap.h"
