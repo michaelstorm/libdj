@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <string.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 int buf_len = 1048576;
 char *buf;
@@ -52,8 +53,7 @@ void recurse_dir(char *base, char *dir_name)
         }
         closedir(dir);
     } else {
-        /* could not open directory */
-        perror ("");
+        perror("opendir");
         exit(1);
     }
 }
