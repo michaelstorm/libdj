@@ -7,7 +7,10 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#define ITERATE_OPT_DIRECT 1
+#define ITERATE_OPT_DIRECT        1
+#define ITERATE_OPT_RECURSIVE     2
+#define ITERATE_OPT_LIST_FILES    4
+#define ITERATE_OPT_LIST_DIRS     8
 
 void exit_str(char *message, ...)
 {
@@ -55,6 +58,7 @@ struct dir_tree_entry
 struct dir_entry_cb_data
 {
     ext2_filsys fs;
+    int flags;
     struct dir_tree_entry *dir;
     struct inode_list *list_start;
     struct inode_list *list_end;
@@ -112,21 +116,29 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
                 "while reading inode contents");
         if (LINUX_S_ISDIR(inode_contents.i_mode))
         {
-            //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
-            struct dir_tree_entry dir;
-            dir.parent = cb_data->dir;
-            dir.path = dir_path_append_name(dir.parent, name);
+            if (cb_data->flags & ITERATE_OPT_LIST_DIRS)
+	    {
+                //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
+                dir_entry_add_file(dirent->inode, name, cb_data);
+	    }
 
-            char block_buf[cb_data->fs->blocksize*3];
+            if (cb_data->flags & ITERATE_OPT_RECURSIVE)
+            {
+                struct dir_tree_entry dir;
+                dir.parent = cb_data->dir;
+                dir.path = dir_path_append_name(dir.parent, name);
 
-            cb_data->dir = &dir;
-            CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0, block_buf, dir_entry_cb, cb_data),
-                    "while iterating over directory %s", name);
-            cb_data->dir = cb_data->dir->parent;
+                char block_buf[cb_data->fs->blocksize*3];
 
-            free(dir.path);
+                cb_data->dir = &dir;
+                CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0, block_buf, dir_entry_cb, cb_data),
+                        "while iterating over directory %s", name);
+                cb_data->dir = cb_data->dir->parent;
+
+                free(dir.path);
+            }
         }
-        else if (!S_ISLNK(inode_contents.i_mode))
+        else if (cb_data->flags & ITERATE_OPT_LIST_FILES && !S_ISLNK(inode_contents.i_mode))
         {
             //fprintf(stderr, "file dir: %s, name: %s\n", cb_data->dir->path, name);
             dir_entry_add_file(dirent->inode, name, cb_data);
@@ -136,7 +148,7 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
     return 0;
 }
 
-void iterate_dir2(char *dev_path, char *target_path, int flags)
+void list_files(char *dev_path, char *target_path, int flags)
 {
     ext2_filsys fs;
     CHECK_FATAL(ext2fs_open(dev_path, 0, 0, 0, unix_io_manager, &fs),
@@ -153,8 +165,7 @@ void iterate_dir2(char *dev_path, char *target_path, int flags)
     CHECK_FATAL(ext2fs_namei_follow(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, target_path, &ino),
             "while looking up path %s", target_path);
 
-    // find the inodes we want to read
-    struct dir_entry_cb_data cb_data = { fs, NULL, NULL, NULL };
+    struct dir_entry_cb_data cb_data = { fs, flags, NULL, NULL, NULL };
     struct ext2_inode inode_contents;
     CHECK_FATAL(ext2fs_read_inode(fs, ino, &inode_contents),
             "while reading inode contents");
@@ -191,7 +202,7 @@ void initialize_ext_batching(char *error_prog_name)
 
 void usage(char *prog_name)
 {
-    fprintf(stderr, "Usage: %s [-cat|-info|-md5|-crc] [-direct] DEVICE DIRECTORY\n", prog_name);
+    fprintf(stderr, "Usage: %s DEVICE DIRECTORY [--list-files] [--list-dirs] [-R]\n", prog_name);
     exit(1);
 }
 
@@ -205,10 +216,17 @@ int main(int argc, char **argv)
     int flags = ITERATE_OPT_DIRECT;
     int device_index = 0;
     int dir_index = 0;
+    int command;
 
-    for (int i = 0; i < argc; i++)
+    for (int i = 1; i < argc; i++)
     {
-        if (device_index == 0)
+	if (!strcmp("-R", argv[i]))
+            flags |= ITERATE_OPT_RECURSIVE;
+	else if (!strcmp("--list-files", argv[i]))
+            flags |= ITERATE_OPT_LIST_FILES;
+	else if (!strcmp("--list-dirs", argv[i]))
+            flags |= ITERATE_OPT_LIST_DIRS;
+	else if (device_index == 0)
             device_index = i;
         else if (dir_index == 0)
             dir_index = i;
@@ -233,6 +251,6 @@ int main(int argc, char **argv)
     char *device = argv[device_index];
     char *dir = argv[dir_index];
 
-    iterate_dir2(device, dir, flags);
+    list_files(device, dir, flags);
     return 0;
 }

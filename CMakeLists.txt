@@ -15,3 +15,6 @@ target_link_libraries(profile dj)
 add_executable(read_dir_files read_dir_files.c)
 
 add_executable(vmtouch vmtouch.c)
+
+add_executable(lister lister.c)
+target_link_libraries(lister ext2fs)
