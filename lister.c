@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 #define ITERATE_OPT_DIRECT        1
 #define ITERATE_OPT_RECURSIVE     2
@@ -117,10 +118,10 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
         if (LINUX_S_ISDIR(inode_contents.i_mode))
         {
             if (cb_data->flags & ITERATE_OPT_LIST_DIRS)
-	    {
+            {
                 //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
                 dir_entry_add_file(dirent->inode, name, cb_data);
-	    }
+            }
 
             if (cb_data->flags & ITERATE_OPT_RECURSIVE)
             {
@@ -194,6 +195,54 @@ void list_files(char *dev_path, char *target_path, int flags)
         exit_str("Error closing file system");
 }
 
+void print_name(char *base_path, char *d_name)
+{
+    char *path = alloca(strlen(base_path) + strlen(d_name) + 2);
+    sprintf(path, "%s/%s", base_path, d_name);
+    path[strlen(base_path) + strlen(d_name) + 1] = '\0';
+    printf("%s\n", path);
+}
+
+void recurse_dir(char *base, char *dir_name, int flags)
+{
+    char *dir_path;
+    if (dir_name == NULL)
+        dir_path = base;
+    else
+    {
+        dir_path = alloca(strlen(base) + strlen(dir_name) + 2);
+        sprintf(dir_path, "%s/%s", base, dir_name);
+    }
+
+    DIR *dir;
+    struct dirent *ent;
+    if ((dir = opendir(dir_path)) != NULL)
+    {
+        while ((ent = readdir(dir)) != NULL)
+        {
+            if (ent->d_type == DT_REG)
+            {
+                if (flags & ITERATE_OPT_LIST_FILES)
+                    print_name(dir_path, ent->d_name);
+            }
+            else if (ent->d_type == DT_DIR)
+            {
+                if (strcmp(ent->d_name, ".") && strcmp(ent->d_name, ".."))
+                {
+                    if (flags & ITERATE_OPT_LIST_DIRS)
+                        print_name(dir_path, ent->d_name);
+                    if (flags & ITERATE_OPT_RECURSIVE)
+                        recurse_dir(dir_path, ent->d_name, flags);
+                }
+            }
+        }
+        closedir(dir);
+    } else {
+        perror("opendir");
+        exit(1);
+    }
+}
+
 void initialize_ext_batching(char *error_prog_name)
 {
     prog_name = error_prog_name;
@@ -213,20 +262,22 @@ int main(int argc, char **argv)
 
     initialize_ext_batching(argv[0]);
 
-    int flags = ITERATE_OPT_DIRECT;
+    int flags = 0;
     int device_index = 0;
     int dir_index = 0;
     int command;
 
     for (int i = 1; i < argc; i++)
     {
-	if (!strcmp("-R", argv[i]))
+        if (!strcmp("-R", argv[i]))
             flags |= ITERATE_OPT_RECURSIVE;
-	else if (!strcmp("--list-files", argv[i]))
+        else if (!strcmp("--list-files", argv[i]))
             flags |= ITERATE_OPT_LIST_FILES;
-	else if (!strcmp("--list-dirs", argv[i]))
+        else if (!strcmp("--list-dirs", argv[i]))
             flags |= ITERATE_OPT_LIST_DIRS;
-	else if (device_index == 0)
+        else if (!strcmp("--no-buffer-cache", argv[i]))
+            flags |= ITERATE_OPT_DIRECT;
+        else if (device_index == 0)
             device_index = i;
         else if (dir_index == 0)
             dir_index = i;
@@ -251,6 +302,9 @@ int main(int argc, char **argv)
     char *device = argv[device_index];
     char *dir = argv[dir_index];
 
-    list_files(device, dir, flags);
+    if (flags & ITERATE_OPT_DIRECT)
+        list_files(device, dir, flags);
+    else
+        recurse_dir(dir, NULL, flags);
     return 0;
 }
