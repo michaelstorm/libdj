@@ -176,8 +176,8 @@ void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb
 
 int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, int offset, int blocksize, char *buf, void *private)
 {
-    // saw the 0xFF in e2fsprogs sources; don't know why the high bits would be set
-    int name_len = dirent->name_len & 0xFF;
+    // copy the entry's name into a new buffer
+    int name_len = dirent->name_len & 0xFF; // saw the 0xFF in e2fsprogs sources; don't know why the high bits would be set
     char name[name_len+1];
     memcpy(name, dirent->name, name_len);
     name[name_len] = '\0';
@@ -186,27 +186,36 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
     {
         struct dir_entry_cb_data *cb_data = (struct dir_entry_cb_data *)private;
 
+        // read the entry's inode contents
         struct ext2_inode inode_contents;
         CHECK_FATAL(ext2fs_read_inode(cb_data->fs, dirent->inode, &inode_contents),
                 "while reading inode contents");
+
         if (LINUX_S_ISDIR(inode_contents.i_mode))
         {
+            // if it's a directory, create a new leaf object in the in-memory tree containing the
+            // fully-qualified name (for convenience) and a reference to the parent
             //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
             struct dir_tree_entry dir;
             dir.parent = cb_data->dir;
             dir.path = dir_path_append_name(dir.parent, name);
 
+            // TODO I think this size is mandated by the docs?
             char block_buf[cb_data->fs->blocksize*3];
 
+            // aaaaand recurse
             cb_data->dir = &dir;
             CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0, block_buf, dir_entry_cb, cb_data),
                     "while iterating over directory %s", name);
             cb_data->dir = cb_data->dir->parent;
 
+            // whee memory leaks
             free(dir.path);
         }
         else if (!S_ISLNK(inode_contents.i_mode))
         {
+            // if it's a file, add it to the linked list that was passed it (and therefore shared by all
+            // directories that we're interested in)
             //fprintf(stderr, "file dir: %s, name: %s\n", cb_data->dir->path, name);
             dir_entry_add_file(dirent->inode, name, cb_data, inode_contents.i_size);
         }
@@ -312,10 +321,12 @@ void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_
 
 void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes, int max_blocks, int coalesce_distance, int flags)
 {
+    // open file system from block device
     ext2_filsys fs;
     CHECK_FATAL(ext2fs_open(dev_path, 0, 0, 0, unix_io_manager, &fs),
             "while opening file system on device %s", dev_path);
 
+    // open the block device in order to read data from it later
     int fd;
     int open_flags = O_RDONLY;
     if (flags & ITERATE_OPT_DIRECT)
@@ -326,18 +337,21 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "BEGIN INODE SCAN\n");
 
+    // look up the file whose blocks we want to read, or the directory whose
+    // constituent files (and their block) we want to read
     ext2_ino_t ino;
     CHECK_FATAL(ext2fs_namei_follow(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, target_path, &ino),
             "while looking up path %s", target_path);
 
-    // find the inodes we want to read
+    // get that inode
     struct dir_entry_cb_data cb_data = { fs, NULL, NULL, NULL };
     struct ext2_inode inode_contents;
     CHECK_FATAL(ext2fs_read_inode(fs, ino, &inode_contents),
             "while reading inode contents");
+
     if (LINUX_S_ISDIR(inode_contents.i_mode))
     {
-        // if it's a directory, iterate over it
+        // if it's a directory, recursively iterate through its contents
         struct dir_tree_entry dir = { target_path, NULL };
         cb_data.dir = &dir;
         CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb, &cb_data),
@@ -358,8 +372,55 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     else
         exit_str("Unexpected file mode %x", inode_contents.i_mode);
 
+    /*
+     * We now have a linked list of file paths to be scanned in cb_data.list_start.
+     */
+
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "END INODE SCAN\n");
+
+    /*
+     * You may ask yourself, "Why sort on the inode numbers at all, if what we
+     * really care about is the order of the data blocks?" My friend, you ask
+     * a reasonable question. Consider the following.
+     *
+     *   a) We can only keep a certain number of blocks in memory at a time.
+     *
+     *   b) We can only keep a certain number of files in memory at a time.
+     *      This is mostly due to clients that maintain state on a per-file
+     *      basis, which is an entirely reasonable thing to do. If we feed them
+     *      too many files at once, they blow out all their memory.
+     *
+     *   c) Therefore, we have to choose which files to buffer in memory at any
+     *      one time. We can do this:
+     *      i) intelligently, by iterating through the files' metadata and
+     *         figuring out which sets of files have the most-contiguous
+     *         blocks, or
+     *      ii) stupidly, by sorting the files on their inode numbers and
+     *          working our way through them, on the assumption that the
+     *          blocks of close-together inodes will be close together
+     *          themselves.
+     *
+     * I have chosen option (ii), for the moment. You may ask yourself, "Doesn't
+     * that merely punt on the problem we're trying to solve? This whole
+     * exercise about sorting blocks is predicated on the file system not
+     * allocating blocks perfectly efficiently, but now we're going to assume
+     * that the ordering of inodes is reasonably close to the ordering of their
+     * blocks?"
+     *
+     * Yes. Because I'm too lazy at the moment to do any better (yay, open
+     * source), and because a perfect implementation of option (i) doesn't
+     * exist in the general case, *assuming* that such an implementation
+     * requires non-constant (and non-trivial) memory asymptotically. In other
+     * words, if we have a really low constraint on available memory and a
+     * really large file system to examine, there ain't no way to pick sets of
+     * files with mostly-contiguous blocks without eating up all your memory
+     * tracking where those blocks are. At least, I think this is the case.
+     *
+     * Mind you, this is a *perfect* solution we're talking about being
+     * impossible within memory contraints. Sorting on inodes is just a
+     * heuristic, and there are others to choose from.
+     */
 
     struct inode_list *inode_list = inode_list_sort(cb_data.list_start);
     int open_inodes_count = 0;
@@ -371,6 +432,11 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "BEGIN BLOCK SCAN\n");
+
+    /*
+     * I must have meant to do something else here, because open_inodes_count
+     * isn't modified in this loop.
+     */
 
     struct inode_list *scan_inode_list = inode_list;
     while (scan_inode_list != NULL && open_inodes_count < max_inodes)
