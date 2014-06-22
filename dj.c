@@ -239,6 +239,8 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
      * really large file system to examine, there ain't no way to pick sets of
      * files with mostly-contiguous blocks without eating up all your memory
      * tracking where those blocks are. At least, I think this is the case.
+     * (Edit: Maybe you could do it fuzzily, and dial up the fuzziness as the
+     * number of blocks to track increases?)
      *
      * Mind you, this is a *perfect* solution we're talking about being
      * impossible within memory contraints. Sorting on inodes is just a
@@ -297,7 +299,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "END BLOCK SCAN\n");
 
-    while (1)
+    while (inode_list != NULL)
     {
         /*
          * While there are inodes remaining and we're below the limit on open
@@ -343,6 +345,18 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         while (block_list != NULL)
         {
             total_blocks++;
+
+            /*
+             * Read ahead of the current block (block_list) to determine the
+             * longest stripe we can read all in one go, that satisfies the
+             * following conditions.
+             *   1) The number of cached blocks in the heap of the inode of any
+             *      block in the stripe is not greater than max_inode_blocks.
+             *   2) The physical distance between any two blocks in the stripe
+             *      that we care about (i.e., the ones that will be passed to
+             *      the callback) is not greater than coalesce_distance.
+             */
+
             struct stripe *stripe = ecalloc(sizeof(struct stripe));
 
             // total number of consecutive blocks, excluding gaps
@@ -351,26 +365,32 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             // total length of consecutive blocks in bytes, including gaps
             size_t consecutive_len = 0;
 
+            // we use this pointer to read ahead of the current block without
+            // losing our place in the overall iteration
             struct block_list *fwd_block_list = block_list;
+
+            // and this awfully-named number tracks the previous value of
+            // fwd_block_list, in order to track how far we're jumping over
+            // blocks we don't care about, so as not to exceed coalesce_distance
             struct block_list *prev_fwd_block = NULL;
+
             while (1)
             {
-                //fprintf(stderr, "%ld < %ld + %d = %s\n", fwd_block_list->logical_block, fwd_block_list->inode_info->blocks_read, max_inode_blocks,
-                //        fwd_block_list->logical_block < fwd_block_list->inode_info->blocks_read + max_inode_blocks ? "true" : "false");
+                // check condition (1)
                 if (fwd_block_list->logical_block >= fwd_block_list->inode_info->blocks_read + max_inode_blocks)
                     break;
 
-                fwd_block_list->stripe_ptr.stripe = stripe;
-                stripe->references++;
+                // check condition (2)
+                e2_blkcnt_t physical_block_diff = prev_fwd_block == NULL ? 0 : fwd_block_list->physical_block - prev_fwd_block->physical_block;
+                if (physical_block_diff > coalesce_distance)
+                    break;
 
                 consecutive_blocks++;
-                e2_blkcnt_t physical_block_diff = prev_fwd_block == NULL ? 0 : fwd_block_list->physical_block - prev_fwd_block->physical_block;
                 if (prev_fwd_block != NULL)
                     consecutive_len += (physical_block_diff - 1) * ((uint64_t)fs->blocksize); // TODO why -1?
 
-                /*if (physical_block_diff > 1)
-                    fprintf(stderr, "skipping %ld blocks between %ld and %ld of %s\n", physical_block_diff,
-                            prev_fwd_block->physical_block, fwd_block_list->physical_block, fwd_block_list->inode_info->path);*/
+                fwd_block_list->stripe_ptr.stripe = stripe;
+                stripe->references++;
 
                 // set the block's start point relative to the stripe
                 fwd_block_list->stripe_ptr.pos = (fwd_block_list->physical_block - block_list->physical_block) * ((uint64_t)fs->blocksize);
@@ -408,11 +428,12 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
             //fprintf(stderr, "allocated buffer of %p at %p\n", ref, ref->data);
 
-            e2_blkcnt_t read_blocks = 0;
-            while (read_blocks < consecutive_blocks)
+            /*
+             * For each block in the stripe, insert the block into its inode's
+             * heap. Then flush that heap out to the client, if able.
+             */
+            for (e2_blkcnt_t read_blocks = 0; read_blocks < consecutive_blocks; read_blocks++)
             {
-                read_blocks++;
-
                 struct inode_cb_info *inode_info = block_list->inode_info;
                 if (inode_info->block_cache == NULL)
                     inode_info->block_cache = heap_create(max_inode_blocks);
@@ -442,13 +463,9 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
                 block_list = old_next;
             }
         }
+
         if (flags & ITERATE_OPT_PROFILE)
             fprintf(stderr, "END BLOCK READ\n");
-
-        if (inode_list == NULL)
-            break;
-        //else
-            //printf("remaining inode name: %s\n", inode_list->name);
     }
 
     double seeks_percentage = total_blocks == 0 ? 0. : ((double)seeks)/((double)total_blocks) * 100.;
