@@ -243,7 +243,7 @@ void recurse_dir(char *base, char *dir_name, int flags)
     }
 }
 
-void initialize_ext_batching(char *error_prog_name)
+void initialize_dj(char *error_prog_name)
 {
     prog_name = error_prog_name;
     initialize_ext2_error_table();
@@ -260,7 +260,7 @@ int main(int argc, char **argv)
     if (argc < 3)
         usage(argv[0]);
 
-    initialize_ext_batching(argv[0]);
+    initialize_dj(argv[0]);
 
     int flags = 0;
     int device_index = 0;

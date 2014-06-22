@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "ext-batching.h"
+#include "dj.h"
 #include "md5.h"
 
 int action_list(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
@@ -62,7 +62,7 @@ int main(int argc, char **argv)
     if (argc < 3)
         usage(argv[0]);
 
-    initialize_ext_batching(argv[0]);
+    initialize_dj(argv[0]);
 
     enum action action = ACTION_NONE;
     int flags = 0;

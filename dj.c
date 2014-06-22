@@ -6,95 +6,17 @@
 #include <alloca.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <et/com_err.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
 #include "crc.h"
-#include "ext-batching.h"
+#include "dir_scan.h"
+#include "dj.h"
+#include "dj_internal.h"
 #include "heap.h"
 #include "listsort.h"
-
-void exit_str(char *message, ...)
-{
-    va_list args;
-    va_start(args,  message);
-    fprintf(stderr, message, args);
-    fprintf(stderr, "\n");
-    va_end(args);
-    exit(1);
-}
-
-void *emalloc(size_t size)
-{
-    void *ptr = malloc(size);
-    if (ptr == NULL)
-        exit_str("Error allocating %d bytes of memory", size);
-    return ptr;
-}
-
-void *ecalloc(size_t size)
-{
-    void *ptr = calloc(1, size);
-    if (ptr == NULL)
-        exit_str("Error allocating %d bytes of memory", size);
-    return ptr;
-}
-
-char *prog_name;
-
-#define CHECK_WARN(FUNC, MSG, ...) \
-{ \
-    errcode_t err = FUNC; \
-    if (err != 0) \
-        com_err(prog_name, err, MSG, ##__VA_ARGS__); \
-}
-
-#define CHECK_WARN_DO(FUNC, DO, MSG, ...) \
-{ \
-    errcode_t err = FUNC; \
-    if (err != 0) \
-    { \
-        com_err(prog_name, err, MSG, ##__VA_ARGS__); \
-        DO; \
-    } \
-}
-
-#define CHECK_FATAL(FUNC, MSG, ...) \
-{ \
-    errcode_t err = FUNC; \
-    if (err != 0) \
-    { \
-        com_err(prog_name, err, MSG, ##__VA_ARGS__); \
-        exit(1); \
-    } \
-}
-
-struct inode_list
-{
-    ext2_ino_t index;
-    char *path;
-    uint64_t len;
-    struct inode_list *next;
-
-    struct block_list *blocks_start;
-    struct block_list *blocks_end;
-};
-
-struct dir_tree_entry
-{
-    char *path;
-    struct dir_tree_entry *parent;
-};
-
-struct dir_entry_cb_data
-{
-    ext2_filsys fs;
-    struct dir_tree_entry *dir;
-    struct inode_list *list_start;
-    struct inode_list *list_end;
-};
+#include "util.h"
 
 struct inode_cb_info
 {
@@ -108,119 +30,12 @@ struct inode_cb_info
     int references;
 };
 
-struct stripe
-{
-    char *data;
-    e2_blkcnt_t references;
-};
-
-struct stripe_pointer
-{
-    struct stripe *stripe;
-    off_t pos;
-    size_t len;
-};
-
-struct block_list
-{
-    struct inode_cb_info *inode_info;
-    blk64_t physical_block;
-    e2_blkcnt_t logical_block;
-    struct stripe_pointer stripe_ptr;
-    struct block_list *next;
-};
-
 struct scan_blocks_info
 {
     block_cb cb;
     struct inode_cb_info *inode_info;
     struct inode_list *inode_list;
 };
-
-char *dir_path_append_name(struct dir_tree_entry *dir, char *name)
-{
-    char *path;
-    if (dir == NULL)
-    {
-        path = malloc(strlen(name)+1);
-        strcpy(path, name);
-    }
-    else
-    {
-        path = malloc(strlen(dir->path) + strlen(name) + 2);
-        sprintf(path, "%s/%s", dir->path, name);
-    }
-    return path;
-}
-
-void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb_data, uint64_t len)
-{
-    struct inode_list *list = ecalloc(sizeof(struct inode_list));
-    list->index = ino;
-    list->len = len;
-    list->path = dir_path_append_name(cb_data->dir, name);
-
-    if (cb_data->list_start == NULL)
-    {
-        cb_data->list_start = list;
-        cb_data->list_end = list;
-    }
-    else
-    {
-        cb_data->list_end->next = list;
-        cb_data->list_end = list;
-    }
-}
-
-int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, int offset, int blocksize, char *buf, void *private)
-{
-    // copy the entry's name into a new buffer
-    int name_len = dirent->name_len & 0xFF; // saw the 0xFF in e2fsprogs sources; don't know why the high bits would be set
-    char name[name_len+1];
-    memcpy(name, dirent->name, name_len);
-    name[name_len] = '\0';
-
-    if (entry == DIRENT_OTHER_FILE)
-    {
-        struct dir_entry_cb_data *cb_data = (struct dir_entry_cb_data *)private;
-
-        // read the entry's inode contents
-        struct ext2_inode inode_contents;
-        CHECK_FATAL(ext2fs_read_inode(cb_data->fs, dirent->inode, &inode_contents),
-                "while reading inode contents");
-
-        if (LINUX_S_ISDIR(inode_contents.i_mode))
-        {
-            // if it's a directory, create a new leaf object in the in-memory tree containing the
-            // fully-qualified name (for convenience) and a reference to the parent
-            //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
-            struct dir_tree_entry dir;
-            dir.parent = cb_data->dir;
-            dir.path = dir_path_append_name(dir.parent, name);
-
-            // TODO I think this size is mandated by the docs?
-            char block_buf[cb_data->fs->blocksize*3];
-
-            // aaaaand recurse
-            cb_data->dir = &dir;
-            CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0, block_buf, dir_entry_cb, cb_data),
-                    "while iterating over directory %s", name);
-            cb_data->dir = cb_data->dir->parent;
-
-            // whee memory leaks
-            free(dir.path);
-        }
-        else if (!S_ISLNK(inode_contents.i_mode))
-        {
-            // if it's a file, add it to the linked list that was passed it (and therefore shared by all
-            // directories that we're interested in)
-            //fprintf(stderr, "file dir: %s, name: %s\n", cb_data->dir->path, name);
-            dir_entry_add_file(dirent->inode, name, cb_data, inode_contents.i_size);
-        }
-    }
-
-    return 0;
-}
 
 // inode indexes are unsigned ints, so don't subtract them
 SORT_FUNC(inode_list_sort, struct inode_list, (p->index < q->index ? -1 : 1)); // semicolons seem to help Sublime Text's syntax parser
@@ -545,7 +360,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
                 if (fwd_block_list->logical_block >= fwd_block_list->inode_info->blocks_read + max_inode_blocks)
                     break;
 
-                // increment the number of blocks that reference this data stripe
+                fwd_block_list->stripe_ptr.stripe = stripe;
                 stripe->references++;
 
                 consecutive_blocks++;
@@ -559,17 +374,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
                 // set the block's start point relative to the stripe
                 fwd_block_list->stripe_ptr.pos = (fwd_block_list->physical_block - block_list->physical_block) * ((uint64_t)fs->blocksize);
-
-                if (fwd_block_list->stripe_ptr.len != fs->blocksize
-                        || fwd_block_list->next == NULL
-                        || (fwd_block_list->next->physical_block > fwd_block_list->physical_block+coalesce_distance
-                            && !(fwd_block_list->physical_block == 0 && fwd_block_list->next->physical_block == 0)))
-                {
-                    consecutive_len += fwd_block_list->stripe_ptr.len;
-                    break;
-                }
-                else
-                    consecutive_len += fs->blocksize;
+                consecutive_len += fwd_block_list->stripe_ptr.len;
 
                 prev_fwd_block = fwd_block_list;
                 fwd_block_list = fwd_block_list->next;
@@ -578,7 +383,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             //fprintf(stderr, "consecutive len: %lu, blocks: %ld\n", consecutive_len, consecutive_blocks);
 
             /*
-             * Read data from device 
+             * Read data from device into stripe.
              */
             if (consecutive_blocks > 0)
             {
@@ -606,7 +411,6 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             e2_blkcnt_t read_blocks = 0;
             while (read_blocks < consecutive_blocks)
             {
-                block_list->stripe_ptr.stripe = ref;
                 read_blocks++;
 
                 struct inode_cb_info *inode_info = block_list->inode_info;
@@ -657,7 +461,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         exit_str("Error closing file system");
 }
 
-void initialize_ext_batching(char *error_prog_name)
+void initialize_dj(char *error_prog_name)
 {
     prog_name = error_prog_name;
     initialize_ext2_error_table();

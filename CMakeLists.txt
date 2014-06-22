@@ -3,7 +3,7 @@ project(dj)
 
 set(CMAKE_C_FLAGS "--std=c99 -fdump-rtl-expand")
 
-add_library(dj SHARED dj.c heap.c listsort.c md5.c crc.c)
+add_library(dj SHARED dj.c heap.c listsort.c md5.c crc.c util.c dir_scan.c)
 target_link_libraries(dj ext2fs crypto rt)
 
 add_executable(dj_cmd cmd_line.c)
