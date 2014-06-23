@@ -3,7 +3,6 @@
 
 #include <ext2fs/ext2fs.h>
 #include <ext2fs/ext2_fs.h>
-#include <alloca.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <fcntl.h>
@@ -51,13 +50,14 @@ SORT_FUNC(block_list_sort, struct block_list, (p->physical_block < q->physical_b
  */
 int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t ref_blk, int ref_offset, void *private)
 {
+    uint64_t block_size = fs->blocksize;
     struct scan_blocks_info *scan_info = (struct scan_blocks_info *)private;
     //if (blockcnt == 0)
     //    fprintf(stderr, "first of %s\n", scan_info->inode_info->path);
 
     // Ignore the extra "empty" block at the end of a file, to allow appending for writers, when we pass in BLOCK_FLAG_HOLE,
     // unless the file is empty
-    if (blockcnt * fs->blocksize >= scan_info->inode_info->len || scan_info->inode_info->len == 0)
+    if (blockcnt * block_size >= scan_info->inode_info->len || scan_info->inode_info->len == 0)
         return 0;
 
     //fprintf(stderr, "logical block %ld of %s is physical block %ld\n", blockcnt, scan_info->inode_info->path, *blocknr);
@@ -67,9 +67,9 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t r
     list->physical_block = *blocknr;
     list->logical_block = blockcnt;
 
-    uint64_t logical_pos = list->logical_block * ((uint64_t)fs->blocksize);
+    uint64_t logical_pos = list->logical_block * block_size;
     uint64_t remaining_len = list->inode_info->len - logical_pos;
-    list->stripe_ptr.len = remaining_len > fs->blocksize ? fs->blocksize : remaining_len;
+    list->stripe_ptr.len = remaining_len > block_size ? block_size : remaining_len;
 
     // sparse files' hole blocks should be passed to this function, since we passed BLOCK_FLAG_HOLE to the
     // iterator function, but that doesn't seem to be happening - so fix it
@@ -93,6 +93,47 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t r
         inode_list->blocks_end = list;
     }
     return 0;
+}
+
+void scan_blocks(ext2_filsys fs, block_cb cb, struct inode_list *inode_list)
+{
+    char block_buf[fs->blocksize * 3];
+    struct scan_blocks_info scan_info = { cb, NULL, NULL };
+
+    /*
+     * For each inode, add the metadata for each of that inode's blocks to the
+     * inode's block list.
+     */
+    struct inode_list *scan_inode_list = inode_list;
+    while (scan_inode_list != NULL)
+    {
+        struct inode_cb_info *info = ecalloc(sizeof(struct inode_cb_info));
+        info->inode = scan_inode_list->index;
+        info->path = malloc(strlen(scan_inode_list->path)+1);
+        strcpy(info->path, scan_inode_list->path);
+        info->len = scan_inode_list->len;
+
+        // there's some duplication of information (path and len) between
+        // scan_info.inode_info and .inode_list, but that's ok
+        scan_info.inode_info = info;
+        scan_info.inode_list = scan_inode_list;
+
+        //fprintf(stderr, "scoping blocks of path: %s\n", info->path);
+
+        CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY | BLOCK_FLAG_READ_ONLY, block_buf, scan_block, &scan_info),
+                "while iterating over blocks of inode %d", info->inode);
+
+        if (info->references == 0)
+        {
+            // empty files generate no blocks, so we'd get into an infinite loop below
+            //fprintf(stderr, "empty %s\n", info->path);
+            scan_info.cb(info->inode, info->path, 0, 0, NULL, 0, &info->cb_private);
+            free(info->path);
+            free(info);
+        }
+
+        scan_inode_list = scan_inode_list->next;
+    }
 }
 
 void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_cb cb, int *open_inodes_count)
@@ -142,24 +183,8 @@ void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_
     }
 }
 
-void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes, int max_blocks, int coalesce_distance, int flags)
+struct inode_list *get_inode_list(ext2_filsys fs, char *target_path)
 {
-    // open file system from block device
-    ext2_filsys fs;
-    CHECK_FATAL(ext2fs_open(dev_path, 0, 0, 0, unix_io_manager, &fs),
-            "while opening file system on device %s", dev_path);
-
-    // open the block device in order to read data from it later
-    int fd;
-    int open_flags = O_RDONLY;
-    if (flags & ITERATE_OPT_DIRECT)
-        open_flags |= O_DIRECT;
-    if ((fd = open(dev_path, open_flags)) < 0)
-        exit_str("Error opening block device %s", dev_path);
-
-    if (flags & ITERATE_OPT_PROFILE)
-        fprintf(stderr, "BEGIN INODE SCAN\n");
-
     // look up the file whose blocks we want to read, or the directory whose
     // constituent files (and their block) we want to read
     ext2_ino_t ino;
@@ -194,6 +219,104 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     }
     else
         exit_str("Unexpected file mode %x", inode_contents.i_mode);
+
+    return cb_data.list_start;
+}
+
+/*
+ * Read ahead of the current block (block_list) to determine the
+ * longest stripe we can read all in one go, that satisfies the
+ * following conditions.
+ *   1) The number of cached blocks in the heap of the inode of any
+ *      block in the stripe is not greater than max_inode_blocks.
+ *   2) The physical distance between any two blocks in the stripe
+ *      that we care about (i.e., the ones that will be passed to
+ *      the callback) is not greater than coalesce_distance.
+ */
+struct stripe *next_stripe(uint64_t block_size, int coalesce_distance,
+                           int max_inode_blocks, struct block_list *block_list)
+{
+    struct stripe *stripe = ecalloc(sizeof(struct stripe));
+
+    // we use this pointer to read ahead of the current block without
+    // losing our place in the overall iteration
+    struct block_list *fwd_block_list = block_list;
+
+    // and this awfully-named number tracks the previous value of
+    // fwd_block_list, in order to track how far we're jumping over
+    // blocks we don't care about, so as not to exceed coalesce_distance
+    struct block_list *prev_fwd_block = NULL;
+
+    while (1)
+    {
+        // check condition (1)
+        if (fwd_block_list->logical_block >= fwd_block_list->inode_info->blocks_read + max_inode_blocks)
+            break;
+
+        // check condition (2)
+        e2_blkcnt_t physical_block_diff = prev_fwd_block == NULL ? 0 : fwd_block_list->physical_block - prev_fwd_block->physical_block;
+        if (physical_block_diff > coalesce_distance)
+            break;
+
+        stripe->consecutive_blocks++;
+        if (prev_fwd_block != NULL)
+            stripe->consecutive_len += (physical_block_diff - 1) * block_size; // TODO why -1?
+
+        fwd_block_list->stripe_ptr.stripe = stripe;
+        stripe->references++;
+
+        // set the block's start point relative to the stripe
+        fwd_block_list->stripe_ptr.pos = (fwd_block_list->physical_block - block_list->physical_block) * block_size;
+        stripe->consecutive_len += fwd_block_list->stripe_ptr.len;
+
+        prev_fwd_block = fwd_block_list;
+        fwd_block_list = fwd_block_list->next;
+    }
+
+    return stripe;
+}
+
+/*
+ * Read data from device into stripe.
+ */
+void read_stripe_data(off_t block_size, blk64_t physical_block, int direct,
+                      int fd, struct stripe *stripe)
+{
+    if (physical_block != 0)
+    {
+        // If opened with O_DIRECT, the device needs to be read in multiples of 512 bytes into a buffer that
+        // is 512-byte aligned. Only the latter is documented; the former is documented as being undocumented.
+        size_t physical_read_len = direct ? ((stripe->consecutive_len+511)/512)*512 : stripe->consecutive_len;
+        if (posix_memalign((void **)&stripe->data, 512, physical_read_len))
+            perror("Error allocating aligned memory");
+
+        off_t physical_pos = physical_block * block_size;
+        if (pread(fd, stripe->data, physical_read_len, physical_pos) < stripe->consecutive_len)
+            perror("Error reading from block device");
+    }
+    else
+        stripe->data = ecalloc(stripe->consecutive_len);
+}
+
+void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes, int max_blocks, int coalesce_distance, int flags)
+{
+    // open file system from block device
+    ext2_filsys fs;
+    CHECK_FATAL(ext2fs_open(dev_path, 0, 0, 0, unix_io_manager, &fs),
+            "while opening file system on device %s", dev_path);
+
+    // open the block device in order to read data from it later
+    int fd;
+    int open_flags = O_RDONLY;
+    if (flags & ITERATE_OPT_DIRECT)
+        open_flags |= O_DIRECT;
+    if ((fd = open(dev_path, open_flags)) < 0)
+        exit_str("Error opening block device %s", dev_path);
+
+    if (flags & ITERATE_OPT_PROFILE)
+        fprintf(stderr, "BEGIN INODE SCAN\n");
+
+    struct inode_list *inode_list = get_inode_list(fs, target_path);
 
     /*
      * We now have a linked list of file paths to be scanned in cb_data.list_start.
@@ -246,58 +369,22 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
      * impossible within memory contraints. Sorting on inodes is just a
      * heuristic, and there are others to choose from.
      */
-
-    struct inode_list *inode_list = inode_list_sort(cb_data.list_start);
-    int open_inodes_count = 0;
-    uint64_t seeks = 0;
-    uint64_t total_blocks = 0;
-
-    char block_buf[fs->blocksize * 3];
-    struct scan_blocks_info scan_info = { cb, NULL, NULL };
-
-    struct block_list *block_list_start;
-    struct block_list *block_list_end;
+    inode_list = inode_list_sort(inode_list);
 
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "BEGIN BLOCK SCAN\n");
 
-    /*
-     * For each inode, add the metadata for each of that inode's blocks to the
-     * inode's block list.
-     */
-    struct inode_list *scan_inode_list = inode_list;
-    while (scan_inode_list != NULL)
-    {
-        struct inode_cb_info *info = ecalloc(sizeof(struct inode_cb_info));
-        info->inode = scan_inode_list->index;
-        info->path = malloc(strlen(scan_inode_list->path)+1);
-        strcpy(info->path, scan_inode_list->path);
-        info->len = scan_inode_list->len;
-
-        // there's some duplication of information (path and len) between
-        // scan_info.inode_info and .inode_list, but that's ok
-        scan_info.inode_info = info;
-        scan_info.inode_list = scan_inode_list;
-
-        //fprintf(stderr, "scoping blocks of path: %s\n", info->path);
-
-        CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY | BLOCK_FLAG_READ_ONLY, block_buf, scan_block, &scan_info),
-                "while iterating over blocks of inode %d", info->inode);
-
-        if (info->references == 0)
-        {
-            // empty files generate no blocks, so we'd get into an infinite loop below
-            //fprintf(stderr, "empty %s\n", info->path);
-            scan_info.cb(info->inode, info->path, 0, 0, NULL, 0, &info->cb_private);
-            free(info->path);
-            free(info);
-        }
-
-        scan_inode_list = scan_inode_list->next;
-    }
+    scan_blocks(fs, cb, inode_list);
 
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "END BLOCK SCAN\n");
+
+    int open_inodes_count = 0;
+    uint64_t seeks = 0;
+    uint64_t total_blocks = 0;
+
+    struct block_list *block_list_start = NULL;
+    struct block_list *block_list_end = NULL;
 
     while (inode_list != NULL)
     {
@@ -346,82 +433,16 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         {
             total_blocks++;
 
-            /*
-             * Read ahead of the current block (block_list) to determine the
-             * longest stripe we can read all in one go, that satisfies the
-             * following conditions.
-             *   1) The number of cached blocks in the heap of the inode of any
-             *      block in the stripe is not greater than max_inode_blocks.
-             *   2) The physical distance between any two blocks in the stripe
-             *      that we care about (i.e., the ones that will be passed to
-             *      the callback) is not greater than coalesce_distance.
-             */
+            struct stripe *stripe = next_stripe(fs->blocksize,
+                                                coalesce_distance,
+                                                max_inode_blocks, block_list);
 
-            struct stripe *stripe = ecalloc(sizeof(struct stripe));
+            //fprintf(stderr, "consecutive len: %lu, blocks: %ld\n", stripe->consecutive_len, stripe->consecutive_blocks);
 
-            // total number of consecutive blocks, excluding gaps
-            e2_blkcnt_t consecutive_blocks = 0;
-
-            // total length of consecutive blocks in bytes, including gaps
-            size_t consecutive_len = 0;
-
-            // we use this pointer to read ahead of the current block without
-            // losing our place in the overall iteration
-            struct block_list *fwd_block_list = block_list;
-
-            // and this awfully-named number tracks the previous value of
-            // fwd_block_list, in order to track how far we're jumping over
-            // blocks we don't care about, so as not to exceed coalesce_distance
-            struct block_list *prev_fwd_block = NULL;
-
-            while (1)
+            if (stripe->consecutive_blocks > 0)
             {
-                // check condition (1)
-                if (fwd_block_list->logical_block >= fwd_block_list->inode_info->blocks_read + max_inode_blocks)
-                    break;
-
-                // check condition (2)
-                e2_blkcnt_t physical_block_diff = prev_fwd_block == NULL ? 0 : fwd_block_list->physical_block - prev_fwd_block->physical_block;
-                if (physical_block_diff > coalesce_distance)
-                    break;
-
-                consecutive_blocks++;
-                if (prev_fwd_block != NULL)
-                    consecutive_len += (physical_block_diff - 1) * ((uint64_t)fs->blocksize); // TODO why -1?
-
-                fwd_block_list->stripe_ptr.stripe = stripe;
-                stripe->references++;
-
-                // set the block's start point relative to the stripe
-                fwd_block_list->stripe_ptr.pos = (fwd_block_list->physical_block - block_list->physical_block) * ((uint64_t)fs->blocksize);
-                consecutive_len += fwd_block_list->stripe_ptr.len;
-
-                prev_fwd_block = fwd_block_list;
-                fwd_block_list = fwd_block_list->next;
-            }
-
-            //fprintf(stderr, "consecutive len: %lu, blocks: %ld\n", consecutive_len, consecutive_blocks);
-
-            /*
-             * Read data from device into stripe.
-             */
-            if (consecutive_blocks > 0)
-            {
-                if (block_list->physical_block != 0)
-                {
-                    // If opened with O_DIRECT, the device needs to be read in multiples of 512 bytes into a buffer that
-                    // is 512-byte aligned. Only the latter is documented; the former is documented as being undocumented.
-                    size_t physical_read_len = flags & ITERATE_OPT_DIRECT ? ((consecutive_len+511)/512)*512 : consecutive_len;
-                    if (posix_memalign((void **)&stripe->data, 512, physical_read_len))
-                        perror("Error allocating aligned memory");
-
-                    off_t physical_pos = block_list->physical_block * ((off_t)fs->blocksize);
-                    if (pread(fd, stripe->data, physical_read_len, physical_pos) < consecutive_len)
-                        perror("Error reading from block device");
-                    seeks++;
-                }
-                else
-                    stripe->data = ecalloc(consecutive_len);
+                read_stripe_data(fs->blocksize, block_list->physical_block,
+                                 flags & ITERATE_OPT_DIRECT, fd, stripe);
             }
             else
                 free(stripe);
@@ -430,9 +451,9 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
             /*
              * For each block in the stripe, insert the block into its inode's
-             * heap. Then flush that heap out to the client, if able.
+             * heap. Then flush that heap out to the client, if possible.
              */
-            for (e2_blkcnt_t read_blocks = 0; read_blocks < consecutive_blocks; read_blocks++)
+            for (e2_blkcnt_t read_blocks = 0; read_blocks < stripe->consecutive_blocks; read_blocks++)
             {
                 struct inode_cb_info *inode_info = block_list->inode_info;
                 if (inode_info->block_cache == NULL)
@@ -451,7 +472,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             }
 
             // block is out of range
-            if (consecutive_len == 0)
+            if (stripe->consecutive_len == 0)
             {
                 //fprintf(stderr, "block %ld (%ld blocks read; %u max blocks) for %s out of range\n", block_list->logical_block, inode_info->blocks_read, max_inode_blocks, inode_info->path);
                 struct block_list *old_next = block_list->next;

@@ -13,6 +13,12 @@ struct stripe
 {
     char *data;
     e2_blkcnt_t references;
+
+    // total number of consecutive blocks, excluding gaps
+    e2_blkcnt_t consecutive_blocks;
+
+    // total length of consecutive blocks in bytes, including gaps
+    size_t consecutive_len;
 };
 
 struct stripe_pointer
