@@ -52,15 +52,12 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt, blk64_t r
 {
     uint64_t block_size = fs->blocksize;
     struct scan_blocks_info *scan_info = (struct scan_blocks_info *)private;
-    //if (blockcnt == 0)
-    //    fprintf(stderr, "first of %s\n", scan_info->inode_info->path);
 
     // Ignore the extra "empty" block at the end of a file, to allow appending for writers, when we pass in BLOCK_FLAG_HOLE,
     // unless the file is empty
     if (blockcnt * block_size >= scan_info->inode_info->len || scan_info->inode_info->len == 0)
         return 0;
 
-    //fprintf(stderr, "logical block %ld of %s is physical block %ld\n", blockcnt, scan_info->inode_info->path, *blocknr);
     struct block_list *list = ecalloc(sizeof(struct block_list));
     list->inode_info = scan_info->inode_info;
     list->inode_info->references++;
@@ -118,16 +115,18 @@ void scan_blocks(ext2_filsys fs, block_cb cb, struct inode_list *inode_list)
         scan_info.inode_info = info;
         scan_info.inode_list = scan_inode_list;
 
-        //fprintf(stderr, "scoping blocks of path: %s\n", info->path);
-
-        CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY | BLOCK_FLAG_READ_ONLY, block_buf, scan_block, &scan_info),
+        int iter_flags = BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY
+                         | BLOCK_FLAG_READ_ONLY;
+        CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, iter_flags,
+                                          block_buf, scan_block, &scan_info),
                 "while iterating over blocks of inode %d", info->inode);
 
         if (info->references == 0)
         {
-            // empty files generate no blocks, so we'd get into an infinite loop below
-            //fprintf(stderr, "empty %s\n", info->path);
-            scan_info.cb(info->inode, info->path, 0, 0, NULL, 0, &info->cb_private);
+            // empty files generate no blocks, so we'd get into an infinite loop
+            // below
+            scan_info.cb(info->inode, info->path, 0, 0, NULL, 0,
+                         &info->cb_private);
             free(info->path);
             free(info);
         }
@@ -138,22 +137,13 @@ void scan_blocks(ext2_filsys fs, block_cb cb, struct inode_list *inode_list)
 
 void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_cb cb, int *open_inodes_count)
 {
-    //fprintf(stderr, "heap size: %d, min: %d, blocks_read: %d\n", heap_size(inode_info->block_cache), ((struct block_list *)heap_min(inode_info->block_cache))->logical_block, inode_info->blocks_read);
     while (heap_size(inode_info->block_cache) > 0 && ((struct block_list *)heap_min(inode_info->block_cache))->logical_block == inode_info->blocks_read)
     {
         if (inode_info->references <= 0)
             exit_str("inode %d has %d references\n", inode_info->path, inode_info->references);
 
-        //fprintf(stderr, "removing min %ld\n", ((struct block_list *)heap_min(inode_info->block_cache))->logical_block);
         struct block_list *next_block = heap_delmin(inode_info->block_cache);
         
-        //fprintf(stderr, "removed from blocks heap for %s (%d references): ", inode_info->path, inode_info->references);
-        //print_heap(stderr, inode_info->block_cache);
-        //verify_heap(inode_info->block_cache);
-        //fprintf(stderr, "\n");
-
-        //fprintf(stderr, "buffer %p has %ld references\n", next_block->stripe_ptr.stripe, next_block->stripe_ptr.stripe->references);
-
         uint64_t logical_pos = next_block->logical_block * ((uint64_t)fs->blocksize);
         char *block_data = next_block->stripe_ptr.stripe->data + next_block->stripe_ptr.pos;
         cb(inode_info->inode, inode_info->path, logical_pos, inode_info->len, block_data, next_block->stripe_ptr.len, &inode_info->cb_private);
@@ -162,14 +152,12 @@ void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_
 
         if (--next_block->stripe_ptr.stripe->references == 0)
         {
-            //fprintf(stderr, "freeing buffer of %p at %p\n", next_block->stripe_ptr.stripe, next_block->stripe_ptr.stripe->data);
             free(next_block->stripe_ptr.stripe->data);
             free(next_block->stripe_ptr.stripe);
         }
 
         free(next_block);
 
-        //fprintf(stderr, "references to %s: %d\n", inode_info->path, inode_info->references-1);
         if (--inode_info->references == 0)
         {
             if (inode_info->block_cache != NULL)
@@ -179,7 +167,6 @@ void flush_inode_blocks(ext2_filsys fs, struct inode_cb_info *inode_info, block_
             (*open_inodes_count)--;
             break;
         }
-        //fprintf(stderr, "open_inodes_count: %d\n", *open_inodes_count);
     }
 }
 
@@ -298,6 +285,33 @@ void read_stripe_data(off_t block_size, blk64_t physical_block, int direct,
         stripe->data = ecalloc(stripe->consecutive_len);
 }
 
+/*
+ * For each block in the stripe, insert the block into its inode's
+ * heap. Then flush that heap out to the client, if possible.
+ */
+struct block_list *heapify_stripe(ext2_filsys fs, block_cb cb,
+                                  struct block_list *block_list,
+                                  struct stripe *stripe, int max_inode_blocks,
+                                  int *open_inodes_count)
+{
+    for (e2_blkcnt_t read_blocks = 0;
+         read_blocks < stripe->consecutive_blocks;
+         read_blocks++)
+    {
+        struct inode_cb_info *inode_info = block_list->inode_info;
+        if (inode_info->block_cache == NULL)
+            inode_info->block_cache = heap_create(max_inode_blocks);
+
+        heap_insert(inode_info->block_cache, block_list->logical_block, block_list);
+
+        // block_list could be freed if it's the heap minimum, so iterate to the next block before flushing cached blocks
+        block_list = block_list->next;
+        flush_inode_blocks(fs, inode_info, cb, open_inodes_count);
+    }
+
+    return block_list;
+}
+
 void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes, int max_blocks, int coalesce_distance, int flags)
 {
     // open file system from block device
@@ -325,50 +339,6 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     if (flags & ITERATE_OPT_PROFILE)
         fprintf(stderr, "END INODE SCAN\n");
 
-    /*
-     * You may ask yourself, "Why sort on the inode numbers at all, if what we
-     * really care about is the order of the data blocks?" My friend, you ask
-     * a reasonable question. Consider the following.
-     *
-     *   a) We can only keep a certain number of blocks in memory at a time.
-     *
-     *   b) We can only keep a certain number of files in memory at a time.
-     *      This is mostly due to clients that maintain state on a per-file
-     *      basis, which is an entirely reasonable thing to do. If we feed them
-     *      too many files at once, they blow out all their memory.
-     *
-     *   c) Therefore, we have to choose which files to buffer in memory at any
-     *      one time. We can do this:
-     *      i) intelligently, by iterating through the files' metadata and
-     *         figuring out which sets of files have the most-contiguous
-     *         blocks, or
-     *      ii) stupidly, by sorting the files on their inode numbers and
-     *         working our way through them, on the assumption that the
-     *         blocks of close-together inodes will be close together
-     *         themselves.
-     *
-     * I have chosen option (ii), for the moment. You may ask yourself, "Doesn't
-     * that merely punt on the problem we're trying to solve? This whole
-     * exercise about sorting blocks is predicated on the file system not
-     * allocating blocks perfectly efficiently, but now we're going to assume
-     * that the ordering of inodes is reasonably close to the ordering of their
-     * blocks?"
-     *
-     * Yes. Because I'm too lazy at the moment to do any better (yay, open
-     * source), and because a perfect implementation of option (i) doesn't
-     * exist in the general case, *assuming* that such an implementation
-     * requires non-constant (and non-trivial) memory asymptotically. In other
-     * words, if we have a really low constraint on available memory and a
-     * really large file system to examine, there ain't no way to pick sets of
-     * files with mostly-contiguous blocks without eating up all your memory
-     * tracking where those blocks are. At least, I think this is the case.
-     * (Edit: Maybe you could do it fuzzily, and dial up the fuzziness as the
-     * number of blocks to track increases?)
-     *
-     * Mind you, this is a *perfect* solution we're talking about being
-     * impossible within memory contraints. Sorting on inodes is just a
-     * heuristic, and there are others to choose from.
-     */
     inode_list = inode_list_sort(inode_list);
 
     if (flags & ITERATE_OPT_PROFILE)
@@ -423,8 +393,8 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         block_list_start = NULL;
         struct block_list **prev_next_ptr = &block_list_start;
 
-        int max_inode_blocks = open_inodes_count > 0 ? (max_blocks+open_inodes_count-1)/open_inodes_count : max_blocks;
-        //fprintf(stderr, "max_inode_blocks: %d\n", max_inode_blocks);
+        int max_inode_blocks = open_inodes_count > 0
+            ? (max_blocks+open_inodes_count-1)/open_inodes_count : max_blocks;
 
         if (flags & ITERATE_OPT_PROFILE)
             fprintf(stderr, "BEGIN BLOCK READ\n");
@@ -437,8 +407,6 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
                                                 coalesce_distance,
                                                 max_inode_blocks, block_list);
 
-            //fprintf(stderr, "consecutive len: %lu, blocks: %ld\n", stripe->consecutive_len, stripe->consecutive_blocks);
-
             if (stripe->consecutive_blocks > 0)
             {
                 read_stripe_data(fs->blocksize, block_list->physical_block,
@@ -447,34 +415,12 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             else
                 free(stripe);
 
-            //fprintf(stderr, "allocated buffer of %p at %p\n", ref, ref->data);
-
-            /*
-             * For each block in the stripe, insert the block into its inode's
-             * heap. Then flush that heap out to the client, if possible.
-             */
-            for (e2_blkcnt_t read_blocks = 0; read_blocks < stripe->consecutive_blocks; read_blocks++)
-            {
-                struct inode_cb_info *inode_info = block_list->inode_info;
-                if (inode_info->block_cache == NULL)
-                    inode_info->block_cache = heap_create(max_inode_blocks);
-
-                //fprintf(stderr, "inserting %ld\n", block_list->logical_block);
-                heap_insert(inode_info->block_cache, block_list->logical_block, block_list);
-
-                /*fprintf(stderr, "inserted block %ld into blocks heap for %s (%d references, %ld blocks read, min %ld): ", block_list->logical_block, inode_info->path, inode_info->references, inode_info->blocks_read, ((struct block_list *)heap_min(inode_info->block_cache))->logical_block);
-                print_heap(stderr, inode_info->block_cache);
-                verify_heap(inode_info->block_cache);*/
-
-                // block_list could be freed if it's the heap minimum, so iterate to the next block before flushing cached blocks
-                block_list = block_list->next;
-                flush_inode_blocks(fs, inode_info, cb, &open_inodes_count);
-            }
+            block_list = heapify_stripe(fs, cb, block_list, stripe,
+                                        max_inode_blocks, &open_inodes_count);
 
             // block is out of range
             if (stripe->consecutive_len == 0)
             {
-                //fprintf(stderr, "block %ld (%ld blocks read; %u max blocks) for %s out of range\n", block_list->logical_block, inode_info->blocks_read, max_inode_blocks, inode_info->path);
                 struct block_list *old_next = block_list->next;
                 *(prev_next_ptr) = block_list;
                 block_list_end = block_list;
@@ -489,8 +435,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             fprintf(stderr, "END BLOCK READ\n");
     }
 
-    double seeks_percentage = total_blocks == 0 ? 0. : ((double)seeks)/((double)total_blocks) * 100.;
-    //fprintf(stderr, "seeks/blocks = %lu/%lu = %lf%%\n", seeks, total_blocks, seeks_percentage);
+    double seeks_percentage = total_blocks == 0 ? 0. : ((double)seeks)/total_blocks * 100.;
 
     if (close(fd) != 0)
         exit_str("Error closing block device");
