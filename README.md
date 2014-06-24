@@ -1,8 +1,8 @@
 # libdj
 
 An implementation of
-[this excellent paper on disk geometry-aware file system access](http://www.ecsl.cs.sunysb.edu/tr/TR240.pdf)
-for ext2 and later.
+[this excellent paper](http://www.ecsl.cs.sunysb.edu/tr/TR240.pdf) on disk
+geometry-aware file system access for ext2 and later.
 
 ## What's it do?
 
@@ -26,46 +26,46 @@ A few examples should clarify what I'm talking about. Here's a perfect-world
 scenario in which a file is laid out completely contiguously on disk:
 
                      A0-A12
-         ............<XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX>............
-         0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
+    ............<XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX>............
+    0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
 
 Blocks 0-12 of file A are laid out at physical blocks 3-15 on disk. The file
 system can read the entire file by issuing the (hypothetical) instructions:
 
-         SEEK 3
-         READ 12
+    SEEK 3
+    READ 12
 
 where 3 is the starting location, and 12 is the number of blocks to be read.
 
 Real life is hard, though. In real life, we might see the file laid out like
 this:
 
-             A0      A1-3        A9-12                   A4-8
-         ....<XX>....<XXXXXXXXXX><XXXXXXXXXXXXXX>........<XXXXXXXXXXXXXXXXXXX>.......
-         0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
+        A0      A1-3        A9-12                   A4-8
+    ....<XX>....<XXXXXXXXXX><XXXXXXXXXXXXXX>........<XXXXXXXXXXXXXXXXXXX>.......
+    0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
 
 A naive strategy (i.e., most operating systems) would issue instructions like:
 
-         SEEK 1
-         READ 1
-         SEEK 1
-         READ 3
-         SEEK 6
-         READ 5
-         SEEK -11
-         READ 4
+    SEEK 1
+    READ 1
+    SEEK 1
+    READ 3
+    SEEK 6
+    READ 5
+    SEEK -11
+    READ 4
 
 That's four seeks to read the same data as above. But can we do better? We can't
 change the way the file is laid out on disk, but we can change our read
 strategy. We notice that blocks 9-12 are right next to blocks 1-3 on disk. What
 if we read blocks 1-3 and 9-12 from physical positions 3-9 all in one go?
 
-         SEEK 1
-         READ 1
-         SEEK 1
-         READ 7
-         SEEK 2
-         READ 5
+    SEEK 1
+    READ 1
+    SEEK 1
+    READ 7
+    SEEK 2
+    READ 5
 
 That's only 3 seeks. But now, we have to keep blocks 9-12 in memory until we've
 read 4-8, if we want to deliver them to our client in logical order. We've
@@ -78,39 +78,39 @@ The example above is a little contrived. How about a more real-world example?
 
 Let's say that there are three files, A, B, and C, written to disk like this:
 
-         B0-1    C0  A0-4            B2-4                C1-6                A5-6
-         <XXXXXX><XX><XXXXXXXXXXXXXX><XXXXXXXXXX>........<XXXXXXXXXXXXXXXXXX><XXXXXX>
-         0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
+    B0-1    C0  A0-4            B2-4                C1-6                A5-6
+    <XXXXXX><XX><XXXXXXXXXXXXXX><XXXXXXXXXX>........<XXXXXXXXXXXXXXXXXX><XXXXXX>
+    0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
 
 Let's say some backup software wants to read files A, B, and C (and let's say in
 that order). To do so naively would require the instructions:
 
-         # read A
-         SEEK 3
-         READ 4
-         SEEK 10
-         READ 2
+    # read A
+    SEEK 3
+    READ 4
+    SEEK 10
+    READ 2
 
-         # read B
-         SEEK -18
-         READ 2
-         SEEK 5
-         READ 3
+    # read B
+    SEEK -18
+    READ 2
+    SEEK 5
+    READ 3
 
-         # read C
-         SEEK -8
-         READ 1
-         SEEK 9
-         READ 5
+    # read C
+    SEEK -8
+    READ 1
+    SEEK 9
+    READ 5
 
 Let's improve that. There's a 10-block section (the code calls these "stripes")
 of contiguous blocks that the client wants, but that we read *four times*. The
 second stripe, from physical positions 12-18, is read twice. But using our new
 strategy, we can issue the instructions:
 
-         READ 10
-         SEEK 2
-         READ 6
+    READ 10
+    SEEK 2
+    READ 6
 
 and we're done.
 
