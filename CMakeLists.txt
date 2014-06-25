@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 2.8)
 project(dj)
 
-set(CMAKE_C_FLAGS "--std=c99 -fdump-rtl-expand")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --std=c99 -fdump-rtl-expand")
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -ggdb")
 
 add_library(dj SHARED dj.c heap.c listsort.c md5.c crc.c util.c dir_scan.c)
 target_link_libraries(dj ext2fs crypto rt)
