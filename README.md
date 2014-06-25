@@ -25,7 +25,7 @@ may be contiguous.
 A few examples should clarify what I'm talking about. Here's a perfect-world
 scenario in which a file is laid out completely contiguously on disk:
 
-                     A0-A12
+                A0-A12
     ............<XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX>............
     0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
 
@@ -72,7 +72,7 @@ read 4-8, if we want to deliver them to our client in logical order. We've
 arrived at the crucial trade-off: with more memory available to the reader, we
 can buffer more out-of-order blocks. If we run out of that scratch memory space,
 the reader must switch to reading blocks naively (in logical order), until the
-out-of-order blocks in memory can be flushed out to the client.
+out-of-order blocks in memory can be flushed out of memory.
 
 The example above is a little contrived. How about a more real-world example?
 
@@ -103,10 +103,10 @@ that order). To do so naively would require the instructions:
     SEEK 9
     READ 5
 
-Let's improve that. There's a 10-block section (the code calls these "stripes")
-of contiguous blocks that the client wants, but that we read *four times*. The
-second stripe, from physical positions 12-18, is read twice. But using our new
-strategy, we can issue the instructions:
+Let's improve on that. There's a 10-block section (the code calls these
+"stripes") of contiguous blocks that the client wants, but that we read *four
+times*. The second stripe, from physical positions 12-18, is read twice. But
+using our new strategy, we can issue the instructions:
 
     READ 10
     SEEK 2
