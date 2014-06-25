@@ -255,7 +255,7 @@ struct stripe *next_stripe(uint64_t block_size, int coalesce_distance,
     // don't care about, so as not to exceed coalesce_distance
     struct block_list *prev_fwd_block = NULL;
 
-    while (1)
+    while (fwd_block_list != NULL)
     {
         // check condition (1)
         e2_blkcnt_t max_logical_block =
