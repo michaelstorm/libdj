@@ -9,7 +9,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include "crc.h"
 #include "dir_scan.h"
 #include "dj.h"
 #include "dj_internal.h"
