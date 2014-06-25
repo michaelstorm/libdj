@@ -22,7 +22,9 @@ struct timespec tp_diff(struct timespec start, struct timespec end)
     return temp;
 }
 
-struct timespec profile_seek_reads(int fd, int op_count, size_t read_size, size_t seek_size, int seek_ratio_numer, int seek_ratio_denom)
+struct timespec profile_seek_reads(int fd, int op_count, size_t read_size,
+                                   size_t seek_size, int seek_ratio_numer,
+                                   int seek_ratio_denom)
 {
     size_t physical_read_len = ((read_size+511)/512)*512;
     char *data;
@@ -40,7 +42,9 @@ struct timespec profile_seek_reads(int fd, int op_count, size_t read_size, size_
     off_t physical_pos = 0;
     for (int i = 0; i < remaining_op_count; i++)
     {
-        if (seek_ratio_denom == 1 || (seek_ratio_denom != 0 && ((i % seek_ratio_denom) < seek_ratio_numer)))
+        if (seek_ratio_denom == 1
+            || (seek_ratio_denom != 0
+                && ((i % seek_ratio_denom) < seek_ratio_numer)))
         {
             physical_pos += seek_size;
             if (lseek(fd, physical_pos, SEEK_SET) != physical_pos)
@@ -73,8 +77,8 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    size_t read_sizes[] = { 4096, 8192 };
-    size_t seek_sizes[] = { 4096, 8192, 32768 };
+    size_t read_sizes[] = {4096, 8192};
+    size_t seek_sizes[] = {4096, 8192, 32768};
     int read_size_count = sizeof(read_sizes) / sizeof(size_t);
     int seek_size_count = sizeof(seek_sizes) / sizeof(size_t);
 
@@ -91,8 +95,10 @@ int main(int argc, char **argv)
             for (int i = 0; i <= 10; i++)
             {
                 double ratio = ((double)i)/((double)10);
-                op_tp = profile_seek_reads(fd, 160000, read_size, seek_size, i, 10);
-                printf("%zu %zu %lf %ld.%ld\n", read_size, seek_size, ratio, op_tp.tv_sec, op_tp.tv_nsec);
+                op_tp = profile_seek_reads(fd, 160000, read_size, seek_size, i,
+                                           10);
+                printf("%zu %zu %lf %ld.%ld\n", read_size, seek_size, ratio,
+                       op_tp.tv_sec, op_tp.tv_nsec);
             }
         }
     }

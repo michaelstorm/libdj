@@ -6,19 +6,6 @@
 
 #include "heap.h"
 
-/*struct heap
-{
-    int max_size;
-    int current_size;
-    struct heap_elem *elems;
-};
-
-struct heap_elem
-{
-    uint64_t key;
-    void *value;
-};*/
-
 struct heap *heap_create(int size)
 {
     struct heap *heap = malloc(sizeof(struct heap));
@@ -44,7 +31,10 @@ void print_heap(FILE *f, struct heap *heap)
 {
     fprintf(f, "heap size %d: ", heap->current_size);
     for (int i = 0; i < heap->current_size; i++)
-        fprintf(f, "%lu%s", heap->elems[i].key, i < heap->current_size-1 ? ", " : "");
+    {
+        fprintf(f, "%lu%s", heap->elems[i].key,
+                i < heap->current_size-1 ? ", " : "");
+    }
     fprintf(f, "\n");
 }
 
@@ -64,9 +54,6 @@ void heapify_up(struct heap *heap, int index)
 {
     while (index > 0)
     {
-        //fprintf(stderr, "heapify_up index %d\n", index);
-        //print_heap(stderr, heap);
-
         int parent_index = (index-1)/2;
 
         struct heap_elem *current_elem = &heap->elems[index];
@@ -88,27 +75,35 @@ void heapify_down(struct heap *heap, int index)
 {
     while (index < heap->current_size)
     {
-        //fprintf(stderr, "heapify_down index %d\n", index);
-        //print_heap(stderr, heap);
-
         struct heap_elem *current_elem = &heap->elems[index];
-        //printf("key: %lu\n", current_elem->key);
 
         int first_child_index = 2 * index + 1;
         int second_child_index = 2 * (index + 1);
-        struct heap_elem *first_child_elem = first_child_index < heap->current_size ? &heap->elems[first_child_index] : NULL;
-        struct heap_elem *second_child_elem = second_child_index < heap->current_size ? &heap->elems[second_child_index] : NULL;
-        int first_smaller = first_child_elem != NULL && first_child_elem->key < current_elem->key;
-        int second_smaller = second_child_elem != NULL && second_child_elem->key < current_elem->key;
 
-        /*if (first_child_elem != NULL)
-            printf("first child: %lu\n", first_child_elem->key);
-        if (second_child_elem != NULL)
-            printf("second child: %lu\n", second_child_elem->key);*/
+        struct heap_elem *first_child_elem =
+            first_child_index < heap->current_size
+                ? &heap->elems[first_child_index]
+                : NULL;
+
+        struct heap_elem *second_child_elem =
+            second_child_index < heap->current_size
+                ? &heap->elems[second_child_index]
+                : NULL;
+
+        int first_smaller = first_child_elem != NULL
+                            && first_child_elem->key < current_elem->key;
+
+        int second_smaller = second_child_elem != NULL
+                             && second_child_elem->key < current_elem->key;
 
         int swap_index = 0;
         if (first_smaller && second_smaller)
-            swap_index = first_child_elem->key < second_child_elem->key ? first_child_index : second_child_index;
+        {
+            swap_index =
+                first_child_elem->key < second_child_elem->key
+                    ? first_child_index
+                    : second_child_index;
+        }
         else if (first_smaller)
             swap_index = first_child_index;
         else if (second_smaller)
@@ -117,9 +112,6 @@ void heapify_down(struct heap *heap, int index)
         if (swap_index > 0)
         {
             swap_heap_elems(current_elem, &heap->elems[swap_index]);
-
-            //fprintf(stderr, "swapped index %d with %d\n", index, swap_index);
-
             index = swap_index;
         }
         else
@@ -130,10 +122,7 @@ void heapify_down(struct heap *heap, int index)
 void heap_insert(struct heap *heap, uint64_t key, void *value)
 {
     if (heap->current_size == heap->max_size)
-    {
-        //printf("insertion of key %lu exceeds max heap size\n", key);
         exit(1);
-    }
 
     int index = heap->current_size++;
     struct heap_elem *elem = &heap->elems[index];
@@ -168,15 +157,35 @@ void verify_heap(struct heap *heap)
 
         int first_child_index = 2 * i + 1;
         int second_child_index = 2 * (i + 1);
-        struct heap_elem *first_child_elem = first_child_index < heap->current_size ? &heap->elems[first_child_index] : NULL;
-        struct heap_elem *second_child_elem = second_child_index < heap->current_size ? &heap->elems[second_child_index] : NULL;
-        int first_greater = first_child_elem == NULL || first_child_elem->key > current_elem->key;
-        int second_greater = second_child_elem == NULL || second_child_elem->key > current_elem->key;
+
+        struct heap_elem *first_child_elem =
+            first_child_index < heap->current_size
+                ? &heap->elems[first_child_index]
+                : NULL;
+
+        struct heap_elem *second_child_elem =
+            second_child_index < heap->current_size
+                ? &heap->elems[second_child_index]
+                : NULL;
+
+        int first_greater = first_child_elem == NULL
+                            || first_child_elem->key > current_elem->key;
+
+        int second_greater = second_child_elem == NULL
+                            || second_child_elem->key > current_elem->key;
 
         if (!first_greater)
-            fprintf(stderr, "heap property violated at index %d (key %lu) because its first child's key is %lu\n", i, heap->elems[i].key, first_child_elem->key);
+        {
+            fprintf(stderr, "heap property violated at index %d (key %lu) "
+                            "because its first child's key is %lu\n",
+                    i, heap->elems[i].key, first_child_elem->key);
+        }
         if (!second_greater)
-            fprintf(stderr, "heap property violated at index %d (key %lu) because its second child's key is %lu\n", i, heap->elems[i].key, second_child_elem->key);
+        {
+            fprintf(stderr, "heap property violated at index %d (key %lu) "
+                            "because its second child's key is %lu\n",
+                    i, heap->elems[i].key, second_child_elem->key);
+        }
 
         if (!first_greater || !second_greater)
             exit(1);

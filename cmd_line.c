@@ -4,16 +4,19 @@
 #include "dj.h"
 #include "md5.h"
 
-int action_list(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
+int action_list(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
+                char *data, uint64_t data_len, void **private)
 {
     if (pos == 0)
         printf("%s\n", path);
     return 0;
 }
 
-int action_cat_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
+int action_cat_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
+                    char *data, uint64_t data_len, void **private)
 {
-    printf("\n\n============== test cb inode %u, pos %lu, len %lu, path %s ==============\n\n", inode, pos, data_len, path);
+    printf("\n\n============== test cb inode %u, pos %lu, len %lu, path %s "
+           "==============\n\n", inode, pos, data_len, path);
     char str_data[data_len+1];
     memcpy(str_data, data, data_len);
     str_data[data_len+1] = '\0';
@@ -21,7 +24,8 @@ int action_cat_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
     return 0;
 }
 
-int action_cat(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
+int action_cat(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
+               char *data, uint64_t data_len, void **private)
 {
     char str_data[data_len+1];
     memcpy(str_data, data, data_len);
@@ -30,20 +34,24 @@ int action_cat(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char
     return 0;
 }
 
-int action_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
+int action_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
+                char *data, uint64_t data_len, void **private)
 {
-    printf("test cb inode %u, pos %lu, len %lu, path %s\n", inode, pos, data_len, path);
+    printf("test cb inode %u, pos %lu, len %lu, path %s\n", inode, pos,
+           data_len, path);
     return 0;
 }
 
-int action_none(uint32_t inode, char *path, uint64_t pos, uint64_t file_len, char *data, uint64_t data_len, void **private)
+int action_none(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
+                char *data, uint64_t data_len, void **private)
 {
     return 0;
 }
 
 void usage(char *prog_name)
 {
-    fprintf(stderr, "Usage: %s [-cat|-info|-md5|-crc] [-direct] DEVICE DIRECTORY\n", prog_name);
+    fprintf(stderr, "Usage: %s [-cat|-info|-md5|-crc] [-direct] "
+                    "DEVICE DIRECTORY\n", prog_name);
     exit(1);
 }
 
@@ -52,10 +60,12 @@ enum action {
     ACTION_CAT,
     ACTION_INFO,
     ACTION_CAT_INFO,
-    ACTION_CRC,
     ACTION_LIST,
     ACTION_NONE
 };
+
+block_cb actions[] = {file_md5, action_cat, action_info, action_cat_info,
+                      action_list, action_none};
 
 int main(int argc, char **argv)
 {
@@ -86,8 +96,6 @@ int main(int argc, char **argv)
             action = ACTION_INFO;
         else if (!strcmp(argv[i], "-cat_info"))
             action = ACTION_CAT_INFO;
-        else if (!strcmp(argv[i], "-crc"))
-            action = ACTION_CRC;
         else if (!strcmp(argv[i], "-list"))
             action = ACTION_LIST;
         else if (!strcmp(argv[i], "-direct"))
@@ -140,15 +148,7 @@ int main(int argc, char **argv)
     char *device = argv[device_index];
     char *dir = argv[dir_index];
 
-    switch (action)
-    {
-        case ACTION_MD5: iterate_dir(device, dir, file_md5, max_inodes, max_blocks, coalesce_distance, flags); break;
-        case ACTION_CAT: iterate_dir(device, dir, action_cat, max_inodes, max_blocks, coalesce_distance, flags); break;
-        case ACTION_INFO: iterate_dir(device, dir, action_info, max_inodes, max_blocks, coalesce_distance, flags); break;
-        case ACTION_CAT_INFO: iterate_dir(device, dir, action_cat_info, max_inodes, max_blocks, coalesce_distance,  flags); break;
-        case ACTION_CRC: fprintf(stderr, "CRC not yet implemented\n"); exit(1); break;
-        case ACTION_LIST: iterate_dir(device, dir, action_list, max_inodes, max_blocks, coalesce_distance, flags); break;
-        case ACTION_NONE: iterate_dir(device, dir, action_none, max_inodes, max_blocks, coalesce_distance, flags); break;
-    }
+    iterate_dir(device, dir, actions[action], max_inodes, max_blocks,
+                coalesce_distance, flags);
     return 0;
 }

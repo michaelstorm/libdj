@@ -8,10 +8,10 @@
 #include <fcntl.h>
 #include <dirent.h>
 
-#define ITERATE_OPT_DIRECT        1
-#define ITERATE_OPT_RECURSIVE     2
-#define ITERATE_OPT_LIST_FILES    4
-#define ITERATE_OPT_LIST_DIRS     8
+#define ITERATE_OPT_DIRECT     1
+#define ITERATE_OPT_RECURSIVE  2
+#define ITERATE_OPT_LIST_FILES 4
+#define ITERATE_OPT_LIST_DIRS  8
 
 void exit_str(char *message, ...)
 {
@@ -82,7 +82,8 @@ char *dir_path_append_name(struct dir_tree_entry *dir, char *name)
     return path;
 }
 
-void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb_data)
+void dir_entry_add_file(ext2_ino_t ino, char *name,
+                        struct dir_entry_cb_data *cb_data)
 {
     struct inode_list *list = ecalloc(sizeof(struct inode_list));
     list->index = ino;
@@ -100,9 +101,11 @@ void dir_entry_add_file(ext2_ino_t ino, char *name, struct dir_entry_cb_data *cb
     }
 }
 
-int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, int offset, int blocksize, char *buf, void *private)
+int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent,
+                 int offset, int blocksize, char *buf, void *private)
 {
-    // saw the 0xFF in e2fsprogs sources; don't know why the high bits would be set
+    // saw the 0xFF in e2fsprogs sources; don't know why the high bits would be
+    // set
     int name_len = dirent->name_len & 0xFF;
     char name[name_len+1];
     memcpy(name, dirent->name, name_len);
@@ -113,15 +116,13 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
         struct dir_entry_cb_data *cb_data = (struct dir_entry_cb_data *)private;
 
         struct ext2_inode inode_contents;
-        CHECK_FATAL(ext2fs_read_inode(cb_data->fs, dirent->inode, &inode_contents),
+        CHECK_FATAL(ext2fs_read_inode(cb_data->fs, dirent->inode,
+                                      &inode_contents),
                 "while reading inode contents");
         if (LINUX_S_ISDIR(inode_contents.i_mode))
         {
             if (cb_data->flags & ITERATE_OPT_LIST_DIRS)
-            {
-                //fprintf(stderr, "directory dir: %s, name: %s\n", cb_data->dir->path, name);
                 dir_entry_add_file(dirent->inode, name, cb_data);
-            }
 
             if (cb_data->flags & ITERATE_OPT_RECURSIVE)
             {
@@ -132,16 +133,18 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent, i
                 char block_buf[cb_data->fs->blocksize*3];
 
                 cb_data->dir = &dir;
-                CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0, block_buf, dir_entry_cb, cb_data),
+                CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0,
+                                                block_buf, dir_entry_cb,
+                                                cb_data),
                         "while iterating over directory %s", name);
                 cb_data->dir = cb_data->dir->parent;
 
                 free(dir.path);
             }
         }
-        else if (cb_data->flags & ITERATE_OPT_LIST_FILES && !S_ISLNK(inode_contents.i_mode))
+        else if (cb_data->flags & ITERATE_OPT_LIST_FILES
+                 && !S_ISLNK(inode_contents.i_mode))
         {
-            //fprintf(stderr, "file dir: %s, name: %s\n", cb_data->dir->path, name);
             dir_entry_add_file(dirent->inode, name, cb_data);
         }
     }
@@ -163,7 +166,8 @@ void list_files(char *dev_path, char *target_path, int flags)
         exit_str("Error opening block device %s", dev_path);
 
     ext2_ino_t ino;
-    CHECK_FATAL(ext2fs_namei_follow(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, target_path, &ino),
+    CHECK_FATAL(ext2fs_namei_follow(fs, EXT2_ROOT_INO, EXT2_ROOT_INO,
+                                    target_path, &ino),
             "while looking up path %s", target_path);
 
     struct dir_entry_cb_data cb_data = { fs, flags, NULL, NULL, NULL };
@@ -175,7 +179,8 @@ void list_files(char *dev_path, char *target_path, int flags)
     cb_data.dir = &dir;
     if (LINUX_S_ISDIR(inode_contents.i_mode))
     {
-        CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb, &cb_data),
+        CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb,
+                                        &cb_data),
                 "while iterating over directory %s", target_path);
     }
     else
@@ -251,7 +256,8 @@ void initialize_dj(char *error_prog_name)
 
 void usage(char *prog_name)
 {
-    fprintf(stderr, "Usage: %s DEVICE DIRECTORY [--list-files] [--list-dirs] [-R]\n", prog_name);
+    fprintf(stderr, "Usage: %s DEVICE DIRECTORY [--list-files] [--list-dirs] "
+                    "[-R]\n", prog_name);
     exit(1);
 }
 
