@@ -1,8 +1,6 @@
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 
-#include <ext2fs/ext2fs.h>
-#include <ext2fs/ext2_fs.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <fcntl.h>
@@ -10,30 +8,10 @@
 #include <sys/stat.h>
 
 #include "dir_scan.h"
-#include "dj.h"
 #include "dj_internal.h"
 #include "heap.h"
 #include "listsort.h"
 #include "util.h"
-
-struct inode_cb_info
-{
-    ext2_ino_t inode;
-    char *path;
-    uint64_t len;
-    e2_blkcnt_t blocks_read;
-    e2_blkcnt_t blocks_scanned;
-    struct heap *block_cache;
-    void *cb_private;
-    int references;
-};
-
-struct scan_blocks_info
-{
-    block_cb cb;
-    struct inode_cb_info *inode_info;
-    struct inode_list *inode_list;
-};
 
 // inode indexes are unsigned ints, so don't subtract them; semicolons seem to
 // help Sublime Text's syntax parser
@@ -42,47 +20,44 @@ SORT_FUNC(block_list_sort, struct block_list,
           (p->physical_block < q->physical_block ? -1 : 1));
 
 /*
- * Callback invoked by libext2fs for each block of a file.
+ * Callback (indirectly) invoked by libext2fs for each block of a file.
  * - Increments the reference count of the block's inode.
  * - Sets the block's metadata (such as logical and physical numbers and length)
  *   in a block_list struct.
  * - Inserts the block_list struct into the inode's linked list of its blocks.
  * - Recursively calls itself to add blocks for holes.
  */
-int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt,
-               blk64_t ref_blk, int ref_offset, void *private)
+void scan_block(uint64_t block_size, blk64_t physical_block,
+                e2_blkcnt_t logical_block, struct scan_blocks_info *scan_info)
 {
-    uint64_t block_size = fs->blocksize;
-    struct scan_blocks_info *scan_info = (struct scan_blocks_info *)private;
-
     // Ignore the extra "empty" block at the end of a file, to allow appending
     // for writers, when we pass in BLOCK_FLAG_HOLE, unless the file is empty
-    if (blockcnt * block_size >= scan_info->inode_info->len
+    if (logical_block * block_size >= scan_info->inode_info->len
         || scan_info->inode_info->len == 0)
     {
-        return 0;
+        return;
     }
 
     struct block_list *list = ecalloc(sizeof(struct block_list));
     list->inode_info = scan_info->inode_info;
     list->inode_info->references++;
-    list->physical_block = *blocknr;
-    list->logical_block = blockcnt;
+    list->physical_block = physical_block;
+    list->logical_block = logical_block;
 
     uint64_t logical_pos = list->logical_block * block_size;
     uint64_t remaining_len = list->inode_info->len - logical_pos;
     list->stripe_ptr.len = remaining_len > block_size
         ? block_size : remaining_len;
 
-    // sparse files' hole blocks should be passed to this function, since we
-    // passed BLOCK_FLAG_HOLE to the iterator function, but that doesn't seem to
-    // be happening - so fix it
-    blk64_t zero_physical_block = 0; // TODO can be static
-
-    // FIXME will this produce an infinite recursion when there's more than one
-    // contiguous hole? What happens when holes are at the end of the file?
-    for (e2_blkcnt_t i = list->inode_info->blocks_scanned; i < blockcnt; i++)
-        scan_block(fs, &zero_physical_block, i, 0, 0, private);
+    // FIXME what happens when holes are at the end of the file?
+    for (e2_blkcnt_t i = list->inode_info->blocks_scanned;
+         i < logical_block; i++)
+    {
+        // sparse files' hole blocks should be passed to this function, since we
+        // passed BLOCK_FLAG_HOLE to the iterator function, but that doesn't
+        // seem to be happening - so fix it
+        scan_block(block_size, 0, i, scan_info);
+    }
 
     list->inode_info->blocks_scanned++;
 
@@ -97,6 +72,16 @@ int scan_block(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt,
         inode_list->blocks_end->next = list;
         inode_list->blocks_end = list;
     }
+}
+
+/*
+ * Wraps the actual callback with a function whose signature libext2fs expects,
+ * which makes the actual function easier to test.
+ */
+int scan_block_cb(ext2_filsys fs, blk64_t *blocknr, e2_blkcnt_t blockcnt,
+                  blk64_t ref_blk, int ref_offset, void *private)
+{
+    scan_block(fs->blocksize, *blocknr, blockcnt, private);
     return 0;
 }
 
@@ -126,7 +111,7 @@ void scan_blocks(ext2_filsys fs, block_cb cb, struct inode_list *inode_list)
         int iter_flags = BLOCK_FLAG_HOLE | BLOCK_FLAG_DATA_ONLY
                          | BLOCK_FLAG_READ_ONLY;
         CHECK_FATAL(ext2fs_block_iterate3(fs, info->inode, iter_flags,
-                                          block_buf, scan_block, &scan_info),
+                                          block_buf, scan_block_cb, &scan_info),
                 "while iterating over blocks of inode %d", info->inode);
 
         if (info->references == 0)

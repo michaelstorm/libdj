@@ -1,7 +1,7 @@
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --std=c99 -fdump-rtl-expand")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -ggdb")
 
-add_library(dj SHARED dj.c heap.c listsort.c md5.c util.c dir_scan.c)
+add_library(dj SHARED dj.c heap.c listsort.c md5.c util.c dir_scan.c dj_util.c)
 target_link_libraries(dj ext2fs crypto rt)
 
 add_executable(dj_cmd cmd_line.c)
