@@ -1,7 +1,14 @@
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --std=c99 -fdump-rtl-expand")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -ggdb")
 
-add_library(dj SHARED dj.c heap.c listsort.c md5.c util.c dir_scan.c dj_util.c)
+# fixes a bunch of time.h stuff
+add_definitions(-D_POSIX_C_SOURCE=199309)
+
+set(DJ_LIBRARY_SOURCE dj.c heap.c listsort.c md5.c util.c dir_scan.c dj_util.c)
+include_directories(logger)
+add_subdirectory(logger)
+
+add_library(dj SHARED ${DJ_LIBRARY_SOURCE})
 target_link_libraries(dj ext2fs crypto rt com_err)
 
 add_executable(dj_cmd cmd_line.c)
