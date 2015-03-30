@@ -2,8 +2,9 @@
 #define DJ_INTERNAL_H
 
 #include <fcntl.h> // required for time_t, ino_t, etc. used by ext2fs.h
-#include <ext2fs/ext2fs.h>
+#include <time.h>
 #include <ext2fs/ext2_fs.h>
+#include <ext2fs/ext2fs.h>
 
 #include "dj.h"
 

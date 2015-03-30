@@ -1,8 +1,9 @@
 #ifndef DJ_DIR_SCAN_H
 #define DJ_DIR_SCAN_H
 
-#include <ext2fs/ext2fs.h>
+#include <time.h>
 #include <ext2fs/ext2_fs.h>
+#include <ext2fs/ext2fs.h>
 #include <stdint.h>
 
 struct dir_tree_entry
