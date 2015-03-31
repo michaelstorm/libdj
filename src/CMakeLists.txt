@@ -1,4 +1,4 @@
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --std=c99 -fdump-rtl-expand")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DCLOG_MIN_LOG_LEVEL=${MIN_LOG_LEVEL} --std=c99 -fdump-rtl-expand")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -ggdb")
 
 # fixes a bunch of time.h stuff

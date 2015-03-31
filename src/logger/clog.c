@@ -47,7 +47,7 @@ void clog_init()
 			if (errno == 0)
 				clog_default_log_level = value;
 			else
-				Log(ERROR, "Environment variable CLOG_LOG_LEVEL must be unset, empty, an integer, or a log level name");
+				Log(CLOG_LOG_LEVEL_ERROR, "Environment variable CLOG_LOG_LEVEL must be unset, empty, an integer, or a log level name");
 		}
 	}
 	
