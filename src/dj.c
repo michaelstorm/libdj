@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "clog.h"
 #include "dir_scan.h"
 #include "dj_internal.h"
 #include "heap.h"
@@ -48,6 +49,8 @@ void scan_block(uint64_t block_size, blk64_t physical_block,
     uint64_t remaining_len = list->inode_info->len - logical_pos;
     list->stripe_ptr.len = remaining_len > block_size
         ? block_size : remaining_len;
+
+    LogTrace("Physical block %lu is logical block %lu of size %lu", list->physical_block, list->logical_block, list->stripe_ptr.len);
 
     // FIXME what happens when holes are at the end of the file?
     for (e2_blkcnt_t i = list->inode_info->blocks_scanned;
@@ -102,6 +105,8 @@ void scan_blocks(ext2_filsys fs, block_cb cb, struct inode_list *inode_list)
         info->path = malloc(strlen(scan_inode_list->path)+1);
         strcpy(info->path, scan_inode_list->path);
         info->len = scan_inode_list->len;
+
+        LogDebug("Scanning blocks of inode %d: %s", info->inode, info->path);
 
         // there's some duplication of information (path and len) between
         // scan_info.inode_info and .inode_list, but that's ok
@@ -191,6 +196,7 @@ struct inode_list *get_inode_list(ext2_filsys fs, char *target_path)
     if (LINUX_S_ISDIR(inode_contents.i_mode))
     {
         // if it's a directory, recursively iterate through its contents
+        LogInfo("Getting inodes of start directory %s", target_path);
         struct dir_tree_entry dir = { target_path, NULL };
         cb_data.dir = &dir;
         CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb,
@@ -209,6 +215,8 @@ struct inode_list *get_inode_list(ext2_filsys fs, char *target_path)
         cb_data.dir = &dir;
         dir_entry_add_file(ino, strrchr(target_path, '/')+1, &cb_data,
                            inode_contents.i_size);
+
+        LogDebug("Added start file %s", target_path);
     }
     else
         exit_str("Unexpected file mode %x", inode_contents.i_mode);
@@ -251,7 +259,6 @@ struct stripe *next_stripe(uint64_t block_size, int coalesce_distance,
         e2_blkcnt_t physical_block_diff = prev_fwd_block == NULL
             ? 0
             : fwd_block_list->physical_block - prev_fwd_block->physical_block;
-
         if (physical_block_diff > coalesce_distance)
             break;
 
@@ -350,8 +357,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     if ((fd = open(dev_path, open_flags)) < 0)
         exit_str("Error opening block device %s", dev_path);
 
-    if (flags & ITERATE_OPT_PROFILE)
-        fprintf(stderr, "BEGIN INODE SCAN\n");
+    LogInfo("BEGIN INODE SCAN");
 
     struct inode_list *inode_list = get_inode_list(fs, target_path);
 
@@ -360,18 +366,15 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
      * cb_data.list_start.
      */
 
-    if (flags & ITERATE_OPT_PROFILE)
-        fprintf(stderr, "END INODE SCAN\n");
+    LogInfo("END INODE SCAN");
 
     inode_list = inode_list_sort(inode_list);
 
-    if (flags & ITERATE_OPT_PROFILE)
-        fprintf(stderr, "BEGIN BLOCK SCAN\n");
+    LogInfo("BEGIN BLOCK SCAN");
 
     scan_blocks(fs, cb, inode_list);
 
-    if (flags & ITERATE_OPT_PROFILE)
-        fprintf(stderr, "END BLOCK SCAN\n");
+    LogInfo("END BLOCK SCAN");
 
     int open_inodes_count = 0;
     uint64_t seeks = 0;
@@ -388,6 +391,8 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
          */
         while (inode_list != NULL && open_inodes_count < max_inodes)
         {
+            LogDebug("Adding blocks of inode %s to block read list", inode_list->path);
+
             if (inode_list->blocks_start != NULL)
             {
                 if (block_list_start == NULL)
@@ -420,8 +425,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         int max_inode_blocks = open_inodes_count > 0
             ? (max_blocks+open_inodes_count-1)/open_inodes_count : max_blocks;
 
-        if (flags & ITERATE_OPT_PROFILE)
-            fprintf(stderr, "BEGIN BLOCK READ\n");
+        LogInfo("BEGIN BLOCK READ");
 
         while (block_list != NULL)
         {
@@ -431,6 +435,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
                                                 coalesce_distance,
                                                 max_inode_blocks, block_list);
 
+            LogDebug("Found stripe of %lu blocks", stripe->consecutive_blocks);
             if (stripe->consecutive_blocks > 0)
             {
                 read_stripe_data(fs->blocksize, block_list->physical_block,
@@ -455,8 +460,7 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             }
         }
 
-        if (flags & ITERATE_OPT_PROFILE)
-            fprintf(stderr, "END BLOCK READ\n");
+        LogInfo("END BLOCK READ");
     }
 
     double seeks_percentage = total_blocks == 0 ? 0. : ((double)seeks)/total_blocks * 100.;
@@ -472,4 +476,5 @@ void initialize_dj(char *error_prog_name)
 {
     prog_name = error_prog_name;
     initialize_ext2_error_table();
+    clog_init();
 }

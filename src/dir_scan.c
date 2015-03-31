@@ -1,8 +1,10 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "clog.h"
 #include "dir_scan.h"
 #include "dj_internal.h"
 #include "util.h"
@@ -17,8 +19,10 @@ char *dir_path_append_name(struct dir_tree_entry *dir, char *name)
     }
     else
     {
-        path = malloc(strlen(dir->path) + strlen(name) + 2);
-        sprintf(path, "%s/%s", dir->path, name);
+        size_t dir_path_len = strlen(dir->path);
+        path = malloc(dir_path_len + strlen(name) + 2);
+        char *sep = dir->path[dir_path_len-1] == '/' ? "" : "/";
+        sprintf(path, "%s%s%s", dir->path, sep, name);
     }
     return path;
 }
@@ -78,9 +82,13 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent,
 
             // aaaaand recurse
             cb_data->dir = &dir;
+
+            LogDebug("Entering directory %s", dir.path);
             CHECK_FATAL(ext2fs_dir_iterate2(cb_data->fs, dirent->inode, 0,
                                             block_buf, dir_entry_cb, cb_data),
                     "while iterating over directory %s", name);
+            LogDebug("Left directory %s", dir.path);
+
             cb_data->dir = cb_data->dir->parent;
 
             // whee memory leaks
@@ -88,6 +96,7 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent,
         }
         else if (!S_ISLNK(inode_contents.i_mode))
         {
+            LogDebug("Adding file %s", name);
             // if it's a file, add it to the linked list that was passed it (and
             // therefore shared by all directories that we're interested in)
             dir_entry_add_file(dirent->inode, name, cb_data,
