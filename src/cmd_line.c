@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
 
 #include "dj.h"
 #include "md5.h"
@@ -19,7 +20,7 @@ int action_cat_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
            "==============\n\n", inode, pos, data_len, path);
     char str_data[data_len+1];
     memcpy(str_data, data, data_len);
-    str_data[data_len+1] = '\0';
+    str_data[data_len] = '\0';
     printf("%s", str_data);
     return 0;
 }
@@ -27,10 +28,7 @@ int action_cat_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
 int action_cat(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
                char *data, uint64_t data_len, void **private)
 {
-    char str_data[data_len+1];
-    memcpy(str_data, data, data_len);
-    str_data[data_len+1] = '\0';
-    printf("%s", str_data);
+    printf("%.*s", data_len, data);
     return 0;
 }
 
@@ -145,10 +143,12 @@ int main(int argc, char **argv)
         usage(argv[0]);
     }
 
+    fprintf(stderr, "max_inodes: %d\n", max_inodes);
+
     char *device = argv[device_index];
     char *dir = argv[dir_index];
 
     iterate_dir(device, dir, actions[action], max_inodes, max_blocks,
-                coalesce_distance, flags);
+                coalesce_distance, flags, POSIX_FADV_NORMAL);
     return 0;
 }

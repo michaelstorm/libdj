@@ -43,6 +43,7 @@ struct block_list
     struct inode_cb_info *inode_info;
     blk64_t physical_block;
     e2_blkcnt_t logical_block;
+    e2_blkcnt_t num_blocks;
     struct stripe_pointer stripe_ptr;
     struct block_list *next;
 };
