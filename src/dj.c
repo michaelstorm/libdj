@@ -218,7 +218,7 @@ struct inode_list *get_inode_list(ext2_filsys fs, char *target_path)
     {
         // if it's a regular file, just add it
         int dir_path_len = strrchr(target_path, '/') - target_path;
-        char *dir_path = malloc(dir_path_len+1);
+        char dir_path[dir_path_len+1];
         memcpy(dir_path, target_path, dir_path_len);;
         dir_path[dir_path_len] = '\0';
 
@@ -329,8 +329,8 @@ struct block_list *heapify_stripe(ext2_filsys fs, block_cb cb,
                                   struct stripe *stripe, int max_inode_blocks,
                                   int *open_inodes_count)
 {
-    for (e2_blkcnt_t read_blocks = 0;
-         read_blocks < stripe->consecutive_blocks;)
+    e2_blkcnt_t consecutive_blocks = stripe->consecutive_blocks; // stripe can be freed during iteration, so save the number of blocks here
+    for (e2_blkcnt_t read_blocks = 0; read_blocks < consecutive_blocks;)
     {
         struct inode_cb_info *inode_info = block_list->inode_info;
         if (inode_info->block_cache == NULL)
@@ -456,11 +456,14 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
             else
                 free(stripe);
 
+            // stripe can be freed in heapify_stripe, so save consecutive_len here
+            size_t consecutive_len = stripe->consecutive_len;
+
             block_list = heapify_stripe(fs, cb, block_list, stripe,
                                         max_inode_blocks, &open_inodes_count);
 
             // block is out of range
-            if (stripe->consecutive_len == 0 && block_list != NULL)
+            if (consecutive_len == 0 && block_list != NULL)
             {
                 struct block_list *old_next = block_list->next;
                 *(prev_next_ptr) = block_list;

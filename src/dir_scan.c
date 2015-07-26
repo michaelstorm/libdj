@@ -21,7 +21,7 @@ char *dir_path_append_name(struct dir_tree_entry *dir, char *name)
     {
         size_t dir_path_len = strlen(dir->path);
         path = malloc(dir_path_len + strlen(name) + 2);
-        char *sep = dir->path[dir_path_len-1] == '/' ? "" : "/";
+        char *sep = dir_path_len > 0 && dir->path[dir_path_len-1] == '/' ? "" : "/";
         sprintf(path, "%s%s%s", dir->path, sep, name);
     }
     return path;
