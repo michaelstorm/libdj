@@ -114,7 +114,7 @@ def write_until_usage(block_device, min_file_bytes, max_file_bytes, target_usage
     if usage < target_usage:
         while usage < target_usage - min_file_bytes:
             print('total: %d, target_usage: %d, current: %d; writing' % (total, target_usage, usage))
-            file_bytes_ceiling = max_file_bytes/100 if random.random() < .5 else max_file_bytes
+            file_bytes_ceiling = int(max_file_bytes/100 if random.random() < .5 else max_file_bytes)
             file_size = random.randint(min_file_bytes, min(file_bytes_ceiling, target_usage - usage))
             write_file(root_path, file_size)
             usage = get_fs_info(block_device)[0] * 1024
