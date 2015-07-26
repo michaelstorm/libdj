@@ -48,7 +48,7 @@ int action_none(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
 
 void usage(char *prog_name)
 {
-    fprintf(stderr, "Usage: %s [-cat|-info|-md5] [-direct] "
+    fprintf(stderr, "Usage: %s [-cat|-info|-cat_info|-md5|-list] [-direct] "
                     "DEVICE DIRECTORY\n", prog_name);
     exit(1);
 }
@@ -98,8 +98,6 @@ int main(int argc, char **argv)
             action = ACTION_LIST;
         else if (!strcmp(argv[i], "-direct"))
             flags |= ITERATE_OPT_DIRECT;
-        else if (!strcmp(argv[i], "-profile"))
-            flags |= ITERATE_OPT_PROFILE;
         else if (!strcmp(argv[i], "-i"))
             inodes_opt = 1;
         else if (!strcmp(argv[i], "-b"))
@@ -142,8 +140,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "Please specify directory on device\n");
         usage(argv[0]);
     }
-
-    fprintf(stderr, "max_inodes: %d\n", max_inodes);
 
     char *device = argv[device_index];
     char *dir = argv[dir_index];
