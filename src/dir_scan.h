@@ -25,5 +25,6 @@ void  dir_entry_add_file(ext2_ino_t ino, char *name,
                          struct dir_entry_cb_data *cb_data, uint64_t len);
 int   dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent,
                    int offset, int blocksize, char *buf, void *private);
+struct inode_list *get_inode_list(ext2_filsys fs, char *target_path);
 
 #endif

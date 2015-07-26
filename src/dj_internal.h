@@ -60,11 +60,4 @@ struct inode_cb_info
     int references;
 };
 
-struct scan_blocks_info
-{
-    block_cb cb;
-    struct inode_cb_info *inode_info;
-    struct inode_list *inode_list;
-};
-
 #endif

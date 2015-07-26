@@ -4,7 +4,7 @@ set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -ggdb")
 # fixes a bunch of time.h stuff
 add_definitions(-D_POSIX_C_SOURCE=200112L)
 
-set(DJ_LIBRARY_SOURCE dj.c heap.c listsort.c md5.c util.c dir_scan.c dj_util.c)
+set(DJ_LIBRARY_SOURCE dj.c heap.c listsort.c md5.c util.c block_scan.c dir_scan.c dj_util.c)
 include_directories(logger)
 add_subdirectory(logger)
 

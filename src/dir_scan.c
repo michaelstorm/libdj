@@ -106,3 +106,49 @@ int dir_entry_cb(ext2_ino_t dir_ino, int entry, struct ext2_dir_entry *dirent,
 
     return 0;
 }
+
+struct inode_list *get_inode_list(ext2_filsys fs, char *target_path)
+{
+    // look up the file whose blocks we want to read, or the directory whose
+    // constituent files (and their block) we want to read
+    ext2_ino_t ino;
+    CHECK_FATAL(ext2fs_namei_follow(fs, EXT2_ROOT_INO, EXT2_ROOT_INO,
+                                    target_path, &ino),
+            "while looking up path %s", target_path);
+
+    // get that inode
+    struct dir_entry_cb_data cb_data = { fs, NULL, NULL, NULL };
+    struct ext2_inode inode_contents;
+    CHECK_FATAL(ext2fs_read_inode(fs, ino, &inode_contents),
+            "while reading inode contents");
+
+    if (LINUX_S_ISDIR(inode_contents.i_mode))
+    {
+        // if it's a directory, recursively iterate through its contents
+        LogInfo("Getting inodes of start directory %s", target_path);
+        struct dir_tree_entry dir = { target_path, NULL };
+        cb_data.dir = &dir;
+        CHECK_FATAL(ext2fs_dir_iterate2(fs, ino, 0, NULL, dir_entry_cb,
+                                        &cb_data),
+                "while iterating over directory %s", target_path);
+    }
+    else if (!S_ISLNK(inode_contents.i_mode))
+    {
+        // if it's a regular file, just add it
+        int dir_path_len = strrchr(target_path, '/') - target_path;
+        char dir_path[dir_path_len+1];
+        memcpy(dir_path, target_path, dir_path_len);;
+        dir_path[dir_path_len] = '\0';
+
+        struct dir_tree_entry dir = { dir_path, NULL };
+        cb_data.dir = &dir;
+        dir_entry_add_file(ino, strrchr(target_path, '/')+1, &cb_data,
+                           inode_contents.i_size);
+
+        LogDebug("Added start file %s", target_path);
+    }
+    else
+        exit_str("Unexpected file mode %x", inode_contents.i_mode);
+
+    return cb_data.list_start;
+}
