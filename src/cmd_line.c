@@ -48,7 +48,7 @@ int action_none(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
 
 void usage(char *prog_name)
 {
-    fprintf(stderr, "Usage: %s [-cat|-info|-md5|-crc] [-direct] "
+    fprintf(stderr, "Usage: %s [-cat|-info|-md5] [-direct] "
                     "DEVICE DIRECTORY\n", prog_name);
     exit(1);
 }
