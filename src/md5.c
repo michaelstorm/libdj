@@ -32,6 +32,7 @@ int file_md5(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
         for (int i = 0; i < MD5_DIGEST_LENGTH; i++)
             printf("%02x", md_buf[i]);
         printf("  %s\n", path);
+        free(ctx);
     }
     return 0;
 }
