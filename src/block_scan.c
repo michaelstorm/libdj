@@ -95,7 +95,7 @@ void scan_blocks(ext2_filsys fs, block_cb cb, struct inode_list *inode_list)
     {
         struct inode_cb_info *info = ecalloc(sizeof(struct inode_cb_info));
         info->inode = scan_inode_list->index;
-        info->path = malloc(strlen(scan_inode_list->path)+1);
+        info->path = emalloc(strlen(scan_inode_list->path)+1);
         strcpy(info->path, scan_inode_list->path);
         info->len = scan_inode_list->len;
 

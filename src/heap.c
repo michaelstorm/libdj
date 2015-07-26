@@ -8,7 +8,7 @@
 
 struct heap *heap_create(int size)
 {
-    struct heap *heap = malloc(sizeof(struct heap));
+    struct heap *heap = emalloc(sizeof(struct heap));
     if (heap == NULL)
     {
         fprintf(stderr, "Failed to allocate memory for heap array");
@@ -17,7 +17,7 @@ struct heap *heap_create(int size)
 
     heap->max_size = size;
     heap->current_size = 0;
-    heap->elems = malloc(sizeof(struct heap_elem) * size);
+    heap->elems = emalloc(sizeof(struct heap_elem) * size);
     return heap;
 }
 

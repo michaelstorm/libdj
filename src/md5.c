@@ -10,7 +10,7 @@ int file_md5(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
     MD5_CTX *ctx;
     if (pos == 0)
     {
-        ctx = malloc(sizeof(MD5_CTX));
+        ctx = emalloc(sizeof(MD5_CTX));
         if (ctx == NULL)
         {
             fprintf(stderr, "Out of memory\n");
