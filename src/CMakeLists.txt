@@ -14,3 +14,6 @@ target_link_libraries(dj_cmd dj)
 add_executable(read_dir_files read_dir_files.c)
 
 add_executable(vmtouch vmtouch.c)
+
+install(TARGETS dj DESTINATION lib)
+install(FILES dj.h DESTINATION include)
