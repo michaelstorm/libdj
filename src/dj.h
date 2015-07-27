@@ -1,5 +1,5 @@
-#ifndef EXT_BATCHING_H
-#define EXT_BATCHING_H
+#ifndef DJ_H
+#define DJ_H
 
 #include <stdint.h>
 

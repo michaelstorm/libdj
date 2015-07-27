@@ -1,4 +1,3 @@
-#include "dj_util.h"
 #include "dj_internal.h"
 
 void print_inode_list(FILE *f, struct inode_list *list)

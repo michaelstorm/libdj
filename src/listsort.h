@@ -1,8 +1,6 @@
 #ifndef LISTSORT_H
 #define LISTSORT_H
 
-#include <stdio.h>
-
 /*
  * Demonstration code for sorting a linked list.
  * 

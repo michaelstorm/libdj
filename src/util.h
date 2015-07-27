@@ -2,7 +2,6 @@
 #define DJ_UTIL_H
 
 #include <et/com_err.h>
-#include <stdint.h>
 
 #define CHECK_WARN(FUNC, MSG, ...) \
 { \

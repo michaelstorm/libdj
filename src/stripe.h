@@ -1,5 +1,3 @@
-#include <stdint.h>
-
 #include "dj_internal.h"
 
 void flush_inode_blocks(uint64_t block_size, struct inode_cb_info *inode_info,

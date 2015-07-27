@@ -1,6 +1,3 @@
-#define _FILE_OFFSET_BITS 64
-
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 

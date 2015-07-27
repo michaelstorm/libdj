@@ -1,14 +1,10 @@
-#include <stdio.h>
-#include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/stat.h>
 
 #include "block_scan.h"
 #include "clog.h"
 #include "dir_scan.h"
 #include "dj_internal.h"
-#include "heap.h"
 #include "listsort.h"
 #include "stripe.h"
 #include "util.h"
