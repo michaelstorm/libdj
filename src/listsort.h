@@ -111,9 +111,4 @@
     } \
 }
 
-#define SORT(type, list, next, cmp) listsort(list, cmp, offsetof(type, next))
-
-typedef int (*sort_cmp_func)(void *, void *);
-void *listsort(void *list, sort_cmp_func cmp, int next_offset);
-
 #endif
