@@ -145,8 +145,8 @@ int main(int argc, char **argv)
     char *device = argv[device_index];
     char *dir = argv[dir_index];
 
-    iterate_dir(device, dir, actions[action], max_inodes, max_blocks,
-                coalesce_distance, flags, POSIX_FADV_NORMAL);
+    dj_read(device, dir, actions[action], max_inodes, max_blocks,
+            coalesce_distance, flags, POSIX_FADV_NORMAL);
 
     dj_free();
 

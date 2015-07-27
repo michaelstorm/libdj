@@ -15,8 +15,8 @@ SORT_FUNC(inode_list_sort, struct inode_list, (p->index < q->index ? -1 : 1));
 SORT_FUNC(block_list_sort, struct block_list,
           (p->physical_block < q->physical_block ? -1 : 1));
 
-void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
-                 int max_blocks, int coalesce_distance, int flags, int advice_flags)
+void dj_read(char *dev_path, char *target_path, block_cb cb, int max_inodes,
+             int max_blocks, int coalesce_distance, int flags, int advice_flags)
 {
     // open file system from block device
     ext2_filsys fs;
@@ -53,8 +53,6 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
     LogInfo("END BLOCK SCAN");
 
     int open_inodes_count = 0;
-    uint64_t seeks = 0;
-    uint64_t total_blocks = 0;
 
     struct block_list *block_list_start = NULL;
     struct block_list *block_list_end = NULL;
@@ -105,8 +103,6 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
         while (block_list != NULL)
         {
-            total_blocks++;
-
             struct stripe *stripe = next_stripe(fs->blocksize,
                                                 coalesce_distance,
                                                 max_inode_blocks, block_list);
@@ -141,8 +137,6 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
 
         LogInfo("END BLOCK READ");
     }
-
-    double seeks_percentage = total_blocks == 0 ? 0. : ((double)seeks)/total_blocks * 100.;
 
     if (close(fd) != 0)
         exit_str("Error closing block device");

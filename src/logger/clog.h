@@ -17,10 +17,6 @@ extern "C" {
 #define CLOG_LOG_LEVEL_ERROR 4
 #define CLOG_LOG_LEVEL_FATAL 5
 
-#ifndef CLOG_MIN_LOG_LEVEL
-#define CLOG_MIN_LOG_LEVEL CLOG_LOG_LEVEL_TRACE
-#endif
-
 struct logger_ctx_t;
 typedef struct logger_ctx_t logger_ctx_t;
 
@@ -93,11 +89,11 @@ void clog_end_log_as(const char *name);
 #define PartialLogAs(name, fmt, ...)   clog_partial_log_as(name, fmt, ##__VA_ARGS__)
 #define EndLogAs(name)               } clog_end_log_as(name)
 
-// set default CLOG_MIN_LOG_LEVEL if not specified
+// set default CLOG_MIN_LOG_LEVEL if not specified or blank
 #define DO_EXPAND(VAL)  VAL ## 1
 #define EXPAND(VAL)     DO_EXPAND(VAL)
 #if !defined(CLOG_MIN_LOG_LEVEL) || (EXPAND(CLOG_MIN_LOG_LEVEL) == 1)
-#define CLOG_MIN_LOG_LEVEL 0
+#define CLOG_MIN_LOG_LEVEL CLOG_LOG_LEVEL_TRACE
 #endif
 
 #if CLOG_MIN_LOG_LEVEL <= CLOG_LOG_LEVEL_TRACE
