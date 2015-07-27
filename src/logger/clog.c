@@ -54,6 +54,11 @@ void clog_init()
 	start_time.tv_nsec = 0;
 }
 
+void clog_free()
+{
+	hashmap_free(loggers);
+}
+
 void clog_set_event_context(const char *context)
 {
 	strncpy(event_context, context, sizeof(event_context)-1);

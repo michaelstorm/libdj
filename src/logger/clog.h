@@ -48,6 +48,7 @@ struct logger_ctx_t
 struct timespec;
 
 void clog_init() DLL_PUBLIC;
+void clog_free() DLL_PUBLIC;
 void clog_set_event_context(const char *context) DLL_PUBLIC;
 void clog_clear_event_context();
 const char *clog_get_event_context();

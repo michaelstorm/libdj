@@ -151,9 +151,14 @@ void iterate_dir(char *dev_path, char *target_path, block_cb cb, int max_inodes,
         exit_str("Error closing file system");
 }
 
-void initialize_dj(char *error_prog_name)
+void dj_init(char *error_prog_name)
 {
     prog_name = error_prog_name;
     initialize_ext2_error_table();
     clog_init();
+}
+
+void dj_free()
+{
+    clog_free();
 }

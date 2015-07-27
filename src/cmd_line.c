@@ -71,7 +71,7 @@ int main(int argc, char **argv)
     if (argc < 3)
         usage(argv[0]);
 
-    initialize_dj(argv[0]);
+    dj_init(argv[0]);
 
     enum action action = ACTION_NONE;
     int flags = 0;
@@ -147,5 +147,8 @@ int main(int argc, char **argv)
 
     iterate_dir(device, dir, actions[action], max_inodes, max_blocks,
                 coalesce_distance, flags, POSIX_FADV_NORMAL);
+
+    dj_free();
+
     return 0;
 }
