@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "heap.h"
+#include "util.h"
 
 struct heap *heap_create(int size)
 {

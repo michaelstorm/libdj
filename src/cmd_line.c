@@ -28,7 +28,7 @@ int action_cat_info(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
 int action_cat(uint32_t inode, char *path, uint64_t pos, uint64_t file_len,
                char *data, uint64_t data_len, void **private)
 {
-    printf("%.*s", data_len, data);
+    printf("%.*s", (int)data_len, data);
     return 0;
 }
 
