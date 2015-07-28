@@ -27,15 +27,12 @@ void recurse_dir(char *base, char *dir_name)
         {
             if (ent->d_type == DT_REG)
             {
-                char *path = alloca(strlen(dir_path) + strlen(ent->d_name) + 2);
+                int path_len = strlen(dir_path) + strlen(ent->d_name) + 2;
+                char path[path_len];
                 sprintf(path, "%s/%s", dir_path, ent->d_name);
                 path[strlen(dir_path) + strlen(ent->d_name) + 1] = '\0';
                 printf("%s\n", path);
 
-                /*FILE *f = fopen(path, "r");
-                while (!feof(f))
-                    fread(buf, buf_len, 1, f);
-                fclose(f);*/
                 int fd = open(path, O_RDONLY | O_DIRECT);
                 int bytes_read;
                 while ((bytes_read = read(fd, buf, buf_len)) > 0);

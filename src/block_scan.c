@@ -2,13 +2,6 @@
 #include "clog.h"
 #include "util.h"
 
-struct scan_blocks_info
-{
-    block_cb cb;
-    struct inode_cb_info *inode_info;
-    struct inode_list *inode_list;
-};
-
 /*
  * Callback (indirectly) invoked by libext2fs for each block of a file.
  * - Increments the reference count of the block's inode.
