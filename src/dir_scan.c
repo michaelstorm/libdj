@@ -8,6 +8,20 @@
 #include "dj_internal.h"
 #include "util.h"
 
+struct dir_tree_entry
+{
+    char *path;
+    struct dir_tree_entry *parent;
+};
+
+struct dir_entry_cb_data
+{
+    ext2_filsys fs;
+    struct dir_tree_entry *dir;
+    struct inode_list *list_start;
+    struct inode_list *list_end;
+};
+
 char *dir_path_append_name(struct dir_tree_entry *dir, char *name)
 {
     char *path;

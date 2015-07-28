@@ -6,6 +6,35 @@
 #include "heap.h"
 #include "util.h"
 
+int deref_stripe(struct stripe *stripe)
+{
+    if (--stripe->references == 0)
+    {
+        free(stripe->data);
+        free(stripe);
+        return 1;
+    }
+    return 0;
+}
+
+int deref_inode(struct inode_cb_info *inode_info)
+{
+    if (--inode_info->references == 0)
+    {
+        if (inode_info->block_cache != NULL)
+            heap_destroy(inode_info->block_cache);
+        free(inode_info->path);
+        free(inode_info);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Trigger the client callback with blocks for an inode that have already been read from disk and
+ * immediately succeed any previously-read blocks. That is, send to the client
+ * any available blocks we have, in logical order.
+ */
 void flush_inode_blocks(uint64_t block_size, struct inode_cb_info *inode_info,
                         block_cb cb, int *open_inodes_count)
 {
@@ -31,20 +60,12 @@ void flush_inode_blocks(uint64_t block_size, struct inode_cb_info *inode_info,
 
         inode_info->blocks_read += next_block->num_blocks;
 
-        if (--next_block->stripe_ptr.stripe->references == 0)
-        {
-            free(next_block->stripe_ptr.stripe->data);
-            free(next_block->stripe_ptr.stripe);
-        }
+        deref_stripe(next_block->stripe_ptr.stripe);
 
         free(next_block);
 
-        if (--inode_info->references == 0)
+        if (deref_inode(inode_info))
         {
-            if (inode_info->block_cache != NULL)
-                heap_destroy(inode_info->block_cache);
-            free(inode_info->path);
-            free(inode_info);
             (*open_inodes_count)--;
             break;
         }
@@ -53,7 +74,7 @@ void flush_inode_blocks(uint64_t block_size, struct inode_cb_info *inode_info,
 
 /*
  * Read ahead of the current block (block_list) to determine the longest stripe
- * we can read all in one go, that satisfies the following conditions.
+ * we can read all in one go that satisfies the following conditions:
  *   1) The number of cached blocks in the heap of the inode of any block in the
  *      stripe is not greater than max_inode_blocks.
  *   2) The physical distance between any two blocks in the stripe that we care
